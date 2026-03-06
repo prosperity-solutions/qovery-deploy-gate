@@ -1,0 +1,42 @@
+apiVersion: admissionregistration.k8s.io/v1
+kind: MutatingWebhookConfiguration
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-injector
+  labels:
+    {{- include "qovery-deploy-gate.labels" . | nindent 4 }}
+  annotations:
+    cert-manager.io/inject-ca-from: {{ .Release.Namespace }}/{{ include "qovery-deploy-gate.fullname" . }}-webhook-tls
+webhooks:
+  - name: sidecar-injector.qovery-deploy-gate.life.li
+    admissionReviewVersions:
+      - v1
+    sideEffects: NoneOnDryRun
+    failurePolicy: {{ .Values.webhook.failurePolicy }}
+    clientConfig:
+      service:
+        name: {{ include "qovery-deploy-gate.fullname" . }}-webhook
+        namespace: {{ .Release.Namespace }}
+        path: /mutate
+        port: 443
+    rules:
+      - operations:
+          - CREATE
+        apiGroups:
+          - ""
+        apiVersions:
+          - v1
+        resources:
+          - pods
+    objectSelector:
+      matchExpressions:
+        - key: qovery-deploy-gate.life.li/group
+          operator: Exists
+    namespaceSelector:
+      matchExpressions:
+        - key: kubernetes.io/metadata.name
+          operator: NotIn
+          values:
+            - kube-system
+            - kube-public
+            - kube-node-lease
+            - cert-manager

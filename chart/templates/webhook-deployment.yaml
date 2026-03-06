@@ -1,0 +1,80 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-webhook
+  labels:
+    {{- include "qovery-deploy-gate.webhook.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.webhook.replicas }}
+  selector:
+    matchLabels:
+      {{- include "qovery-deploy-gate.webhook.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "qovery-deploy-gate.webhook.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "qovery-deploy-gate.fullname" . }}-webhook
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: webhook
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          image: "{{ .Values.webhook.image.repository }}:{{ .Values.webhook.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.webhook.image.pullPolicy }}
+          ports:
+            - name: https
+              containerPort: {{ .Values.webhook.port }}
+              protocol: TCP
+          env:
+            - name: GATE_URL
+              value: "http://{{ include "qovery-deploy-gate.fullname" . }}-gate:{{ .Values.gate.port }}"
+            - name: SIDECAR_IMAGE
+              value: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag | default .Chart.AppVersion }}"
+            - name: PORT
+              value: {{ .Values.webhook.port | quote }}
+            - name: POLL_INTERVAL
+              value: {{ .Values.sidecar.pollInterval | quote }}
+            - name: TLS_CERT_PATH
+              value: /etc/webhook/certs/tls.crt
+            - name: TLS_KEY_PATH
+              value: /etc/webhook/certs/tls.key
+          volumeMounts:
+            - name: tls-certs
+              mountPath: /etc/webhook/certs
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: https
+              scheme: HTTPS
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.webhook.resources | nindent 12 }}
+      volumes:
+        - name: tls-certs
+          secret:
+            secretName: {{ include "qovery-deploy-gate.fullname" . }}-webhook-tls
+        - name: tmp
+          emptyDir: {}

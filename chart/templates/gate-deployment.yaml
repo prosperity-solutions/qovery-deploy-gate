@@ -1,0 +1,73 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-gate
+  labels:
+    {{- include "qovery-deploy-gate.gate.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.gate.replicas }}
+  selector:
+    matchLabels:
+      {{- include "qovery-deploy-gate.gate.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "qovery-deploy-gate.gate.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "qovery-deploy-gate.fullname" . }}-gate
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: gate
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          image: "{{ .Values.gate.image.repository }}:{{ .Values.gate.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.gate.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gate.port }}
+              protocol: TCP
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "qovery-deploy-gate.fullname" . }}-gate
+                  key: DATABASE_URL
+            - name: MIN_SETTLE_TIME
+              value: {{ .Values.gate.minSettleTime | quote }}
+            - name: PORT
+              value: {{ .Values.gate.port | quote }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: home-cache
+              mountPath: /home/node/.cache
+          resources:
+            {{- toYaml .Values.gate.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir: {}
+        - name: home-cache
+          emptyDir: {}

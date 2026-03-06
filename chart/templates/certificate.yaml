@@ -1,0 +1,16 @@
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-webhook-tls
+  labels:
+    {{- include "qovery-deploy-gate.labels" . | nindent 4 }}
+spec:
+  secretName: {{ include "qovery-deploy-gate.fullname" . }}-webhook-tls
+  issuerRef:
+    name: {{ include "qovery-deploy-gate.issuerName" . }}
+    kind: {{ .Values.certManager.issuerRef.kind }}
+  dnsNames:
+    - {{ include "qovery-deploy-gate.fullname" . }}-webhook
+    - {{ include "qovery-deploy-gate.fullname" . }}-webhook.{{ .Release.Namespace }}
+    - {{ include "qovery-deploy-gate.fullname" . }}-webhook.{{ .Release.Namespace }}.svc
+    - {{ include "qovery-deploy-gate.fullname" . }}-webhook.{{ .Release.Namespace }}.svc.cluster.local

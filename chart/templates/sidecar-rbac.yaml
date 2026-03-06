@@ -1,0 +1,44 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-sidecar
+  labels:
+    {{- include "qovery-deploy-gate.labels" . | nindent 4 }}
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - pods/status
+    verbs:
+      - patch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-sidecar
+  labels:
+    {{- include "qovery-deploy-gate.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ include "qovery-deploy-gate.fullname" . }}-sidecar
+subjects:
+{{- if .Values.sidecar.rbac.serviceAccountNamespaces }}
+{{- range .Values.sidecar.rbac.serviceAccountNamespaces }}
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: system:serviceaccounts:{{ . }}
+{{- end }}
+{{- else }}
+  # Grants to all service accounts because Qovery creates namespaces dynamically.
+  # Set sidecar.rbac.serviceAccountNamespaces to restrict to specific namespaces.
+  - apiGroup: rbac.authorization.k8s.io
+    kind: Group
+    name: system:serviceaccounts
+{{- end }}
