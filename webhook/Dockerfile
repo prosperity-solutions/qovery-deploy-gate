@@ -7,6 +7,7 @@ COPY src ./src/
 RUN npm run build
 
 FROM node:24.14.0-alpine
+LABEL org.opencontainers.image.description="qovery-deploy-gate mutating admission webhook — auto-injects readiness gate sidecars into labeled pods"
 WORKDIR /app
 COPY --from=builder /app/package*.json ./
 RUN npm ci --omit=dev && npm cache clean --force

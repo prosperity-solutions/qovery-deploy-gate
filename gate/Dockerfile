@@ -9,6 +9,7 @@ COPY src ./src/
 RUN npm run build
 
 FROM node:24.14.0-alpine
+LABEL org.opencontainers.image.description="qovery-deploy-gate API server and web dashboard — coordinates synchronized traffic cutover for multi-service deployments on Qovery"
 WORKDIR /app
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/prisma ./prisma
