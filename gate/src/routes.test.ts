@@ -194,7 +194,7 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.group_services_ready).toBe(2);
   });
 
-  it("POST /ready transitions deployment to COMPLETED when all groups ready", async () => {
+  it("POST /ready keeps deployment ACTIVE in DB (status derived at query time)", async () => {
     // Two groups, one service each
     await app.inject({
       method: "POST",
@@ -218,15 +218,15 @@ describeWithDb("API Routes (integration)", () => {
       payload: { deployment_id: "dep-6", service_id: "svc-b" },
     });
 
+    // DB status stays ACTIVE — COMPLETED is derived at query time in /status
     const deployment = await prisma.deployment.findUnique({
       where: { deploymentId: "dep-6" },
     });
-    expect(deployment!.status).toBe("COMPLETED");
-    expect(deployment!.completedAt).not.toBeNull();
+    expect(deployment!.status).toBe("ACTIVE");
   });
 
-  it("POST /ready returns open for already completed deployment", async () => {
-    // Create and complete a deployment
+  it("POST /ready returns open when called again after all services ready", async () => {
+    // Create a deployment and mark service ready
     await app.inject({
       method: "POST",
       url: "/register",
@@ -238,7 +238,7 @@ describeWithDb("API Routes (integration)", () => {
       payload: { deployment_id: "dep-7", service_id: "svc-a" },
     });
 
-    // Should be completed now, call ready again
+    // Call ready again — gate should still be open
     const res = await app.inject({
       method: "POST",
       url: "/ready",
@@ -247,7 +247,8 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().gate_status).toBe("open");
-    expect(res.json().message).toContain("already completed");
+    expect(res.json().group_services_total).toBe(1);
+    expect(res.json().group_services_ready).toBe(1);
   });
 
   it("GET /status returns deployment data", async () => {
