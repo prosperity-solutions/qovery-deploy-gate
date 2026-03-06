@@ -1,0 +1,23 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-webhook
+  labels:
+    {{- include "qovery-deploy-gate.webhook.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "qovery-deploy-gate.webhook.selectorLabels" . | nindent 6 }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-gate
+  labels:
+    {{- include "qovery-deploy-gate.gate.labels" . | nindent 4 }}
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      {{- include "qovery-deploy-gate.gate.selectorLabels" . | nindent 6 }}

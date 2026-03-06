@@ -1,0 +1,10 @@
+{{- if .Values.certManager.createSelfSignedIssuer }}
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-selfsigned
+  labels:
+    {{- include "qovery-deploy-gate.labels" . | nindent 4 }}
+spec:
+  selfSigned: {}
+{{- end }}

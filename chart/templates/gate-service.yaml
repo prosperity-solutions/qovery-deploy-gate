@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "qovery-deploy-gate.fullname" . }}-gate
+  labels:
+    {{- include "qovery-deploy-gate.gate.labels" . | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.gate.port }}
+      targetPort: http
+      protocol: TCP
+      name: http
+  selector:
+    {{- include "qovery-deploy-gate.gate.selectorLabels" . | nindent 4 }}

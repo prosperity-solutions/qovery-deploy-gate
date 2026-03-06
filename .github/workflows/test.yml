@@ -1,0 +1,116 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_DB: deploy_gate_test
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: cd gate && npm ci
+
+      - name: Generate Prisma client
+        run: cd gate && npx prisma generate
+
+      - name: Run migrations
+        run: cd gate && npx prisma migrate deploy
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/deploy_gate_test
+
+      - name: Lint
+        run: cd gate && npm run lint
+
+      - name: Test
+        run: cd gate && npm test
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/deploy_gate_test
+
+  webhook:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install dependencies
+        run: cd webhook && npm ci
+
+      - name: Lint
+        run: cd webhook && npm run lint
+
+      - name: Test
+        run: cd webhook && npm test
+
+  helm-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v3
+
+      - name: Lint chart
+        run: helm dependency build ./chart && helm lint ./chart
+
+      - name: Template chart
+        run: helm template test ./chart
+
+  release-dry-run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install semantic-release
+        run: npm install -g semantic-release @semantic-release/git @semantic-release/exec
+
+      - name: Semantic release dry run
+        run: npx semantic-release --dry-run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  docker-build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        image: [gate, webhook, sidecar]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build ${{ matrix.image }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ./${{ matrix.image }}
+          push: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
