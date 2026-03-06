@@ -26,16 +26,14 @@ async function shutdown(signal: string) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-app.listen({ port: env.PORT, host: env.HOST }, async (err) => {
-  if (err) {
-    app.log.error(err);
-    process.exit(1);
-  }
-
-  // Run cleanup once on startup, then every 60 seconds
+try {
+  await app.listen({ port: env.PORT, host: env.HOST });
   await expireStaleDeployments(prisma, env.DEPLOYMENT_TTL, app.log);
   cleanupInterval = setInterval(
     () => expireStaleDeployments(prisma, env.DEPLOYMENT_TTL, app.log),
     60_000,
   );
-});
+} catch (err) {
+  app.log.error(err);
+  process.exit(1);
+}
