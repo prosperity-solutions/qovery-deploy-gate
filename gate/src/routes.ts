@@ -253,6 +253,13 @@ export function registerRoutes(
       take: 20,
     });
 
+    const recentExpired = await prisma.deployment.findMany({
+      where: { status: DeploymentStatus.EXPIRED },
+      include: { services: true },
+      orderBy: { completedAt: "desc" },
+      take: 20,
+    });
+
     const formatDeployment = (d: typeof activeDeployments[number]) => {
       // Group services by group name
       const groups: Record<
@@ -285,6 +292,7 @@ export function registerRoutes(
     return reply.status(200).send({
       active: activeDeployments.map(formatDeployment),
       recent_completed: recentCompleted.map(formatDeployment),
+      recent_expired: recentExpired.map(formatDeployment),
     });
   });
 }

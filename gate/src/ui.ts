@@ -77,6 +77,11 @@ export function registerUI(app: FastifyInstance) {
       color: #58a6ff !important;
     }
 
+    .badge-expired {
+      background: #2a1e0f !important;
+      color: #d29922 !important;
+    }
+
     .deployment-card {
       background: #161b22;
       border: 1px solid #21262d;
@@ -116,6 +121,11 @@ export function registerUI(app: FastifyInstance) {
     .status-completed {
       background: #1c2333;
       color: #58a6ff;
+    }
+
+    .status-expired {
+      background: #2a1e0f;
+      color: #d29922;
     }
 
     .deployment-meta {
@@ -257,6 +267,16 @@ export function registerUI(app: FastifyInstance) {
         <div class="empty-state">No recently completed deployments</div>
       </div>
     </div>
+
+    <div class="section">
+      <div class="section-title">
+        Recently Expired
+        <span id="expired-count" class="badge badge-expired">0</span>
+      </div>
+      <div id="expired-deployments">
+        <div class="empty-state">No recently expired deployments</div>
+      </div>
+    </div>
   </div>
 
   <script>
@@ -305,9 +325,11 @@ export function registerUI(app: FastifyInstance) {
         '</div>';
       }
 
-      const statusClass = deployment.status === 'ACTIVE' ? 'status-active' : 'status-completed';
+      const statusClasses = { ACTIVE: 'status-active', COMPLETED: 'status-completed', EXPIRED: 'status-expired' };
+      const statusClass = statusClasses[deployment.status] || 'status-completed';
+      const endLabel = deployment.status === 'EXPIRED' ? 'Expired' : 'Completed';
       const meta = 'Registered ' + timeAgo(deployment.first_registered_at) +
-        (deployment.completed_at ? ' | Completed ' + timeAgo(deployment.completed_at) : '');
+        (deployment.completed_at ? ' | ' + endLabel + ' ' + timeAgo(deployment.completed_at) : '');
 
       return '<div class="deployment-card">' +
         '<div class="deployment-header">' +
@@ -344,6 +366,15 @@ export function registerUI(app: FastifyInstance) {
           completedContainer.innerHTML = '<div class="empty-state">No recently completed deployments</div>';
         } else {
           completedContainer.innerHTML = data.recent_completed.map(renderDeployment).join('');
+        }
+
+        // Expired
+        const expiredContainer = document.getElementById('expired-deployments');
+        document.getElementById('expired-count').textContent = (data.recent_expired || []).length;
+        if (!data.recent_expired || data.recent_expired.length === 0) {
+          expiredContainer.innerHTML = '<div class="empty-state">No recently expired deployments</div>';
+        } else {
+          expiredContainer.innerHTML = data.recent_expired.map(renderDeployment).join('');
         }
 
         document.getElementById('last-update').textContent = new Date().toLocaleTimeString();

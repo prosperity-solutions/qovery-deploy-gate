@@ -3,6 +3,7 @@ import { PrismaPg } from "@prisma/adapter-pg";
 import { PrismaClient } from "./generated/prisma/client.js";
 import { registerRoutes } from "./routes.js";
 import { registerUI } from "./ui.js";
+import { expireStaleDeployments } from "./cleanup.js";
 import { env } from "./config.js";
 
 const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
@@ -12,8 +13,11 @@ const app = Fastify({ logger: true });
 registerRoutes(app, prisma, env.MIN_SETTLE_TIME);
 registerUI(app);
 
+let cleanupInterval: ReturnType<typeof setInterval>;
+
 async function shutdown(signal: string) {
   app.log.info(`Received ${signal}, shutting down gracefully...`);
+  clearInterval(cleanupInterval);
   await app.close();
   await prisma.$disconnect();
   process.exit(0);
@@ -22,9 +26,16 @@ async function shutdown(signal: string) {
 process.on("SIGTERM", () => shutdown("SIGTERM"));
 process.on("SIGINT", () => shutdown("SIGINT"));
 
-app.listen({ port: env.PORT, host: env.HOST }, (err) => {
+app.listen({ port: env.PORT, host: env.HOST }, async (err) => {
   if (err) {
     app.log.error(err);
     process.exit(1);
   }
+
+  // Run cleanup once on startup, then every 60 seconds
+  await expireStaleDeployments(prisma, env.DEPLOYMENT_TTL, app.log);
+  cleanupInterval = setInterval(
+    () => expireStaleDeployments(prisma, env.DEPLOYMENT_TTL, app.log),
+    60_000,
+  );
 });
