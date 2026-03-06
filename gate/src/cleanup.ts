@@ -20,7 +20,6 @@ export async function expireStaleDeployments(
       },
       data: {
         status: DeploymentStatus.EXPIRED,
-        completedAt: new Date(),
       },
     });
 

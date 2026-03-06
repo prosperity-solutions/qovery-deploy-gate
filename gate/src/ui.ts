@@ -327,9 +327,7 @@ export function registerUI(app: FastifyInstance) {
 
       const statusClasses = { ACTIVE: 'status-active', COMPLETED: 'status-completed', EXPIRED: 'status-expired' };
       const statusClass = statusClasses[deployment.status] || 'status-completed';
-      const endLabel = deployment.status === 'EXPIRED' ? 'Expired' : 'Completed';
-      const meta = 'Registered ' + timeAgo(deployment.first_registered_at) +
-        (deployment.completed_at ? ' | ' + endLabel + ' ' + timeAgo(deployment.completed_at) : '');
+      const meta = 'Registered ' + timeAgo(deployment.first_registered_at);
 
       return '<div class="deployment-card">' +
         '<div class="deployment-header">' +

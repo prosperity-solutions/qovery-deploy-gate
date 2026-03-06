@@ -112,35 +112,19 @@ export function registerRoutes(
   }, async (request, reply) => {
     const { deployment_id, service_id } = request.body;
 
-    // Check for already-completed deployment outside transaction (fast path)
-    const deploymentCheck = await prisma.deployment.findUnique({
-      where: { deploymentId: deployment_id },
-    });
-
-    if (!deploymentCheck) {
-      return reply.status(404).send({
-        gate_status: "error",
-        reason: `Unknown deployment: ${deployment_id}`,
-      });
-    }
-
-    if (deploymentCheck.status === DeploymentStatus.COMPLETED || deploymentCheck.status === DeploymentStatus.EXPIRED) {
-      return reply.status(200).send({
-        gate_status: "open",
-        deployment_id,
-        service_id,
-        message: `Deployment already ${deploymentCheck.status.toLowerCase()}`,
-      });
-    }
-
     // All state mutations and group evaluation in a single transaction
     const result = await prisma.$transaction(async (tx) => {
       const deployment = await tx.deployment.findUnique({
         where: { deploymentId: deployment_id },
       });
 
-      if (!deployment || deployment.status === DeploymentStatus.COMPLETED || deployment.status === DeploymentStatus.EXPIRED) {
-        return { gate_status: "open" as const, message: `Deployment already ${deployment?.status.toLowerCase() ?? "completed"}` };
+      if (!deployment) {
+        return { gate_status: "not_found" as const, reason: `Unknown deployment: ${deployment_id}` };
+      }
+
+      // Expired deployments always open the gate
+      if (deployment.status === DeploymentStatus.EXPIRED) {
+        return { gate_status: "open" as const, message: "Deployment expired" };
       }
 
       const service = await tx.deploymentService.findUnique({
@@ -187,23 +171,6 @@ export function registerRoutes(
       const settleTimeRemainingSeconds = Math.ceil(settleTimeRemainingMs / 1000);
 
       if (allGroupReady && settleTimeMet) {
-        // Check if ALL groups for this deployment are complete
-        const allServices = await tx.deploymentService.findMany({
-          where: { deploymentId: deployment_id },
-        });
-
-        const allReady = allServices.every((s) => {
-          if (s.id === service.id) return true;
-          return s.readyAt !== null;
-        });
-
-        if (allReady) {
-          await tx.deployment.update({
-            where: { deploymentId: deployment_id, status: DeploymentStatus.ACTIVE },
-            data: { status: DeploymentStatus.COMPLETED, completedAt: new Date() },
-          });
-        }
-
         return {
           gate_status: "open" as const,
           group: service.groupName,
@@ -239,29 +206,14 @@ export function registerRoutes(
 
   // Get status of all deployments
   app.get("/status", async (_request, reply) => {
-    const activeDeployments = await prisma.deployment.findMany({
-      where: { status: DeploymentStatus.ACTIVE },
+    const deployments = await prisma.deployment.findMany({
+      where: { status: { in: [DeploymentStatus.ACTIVE, DeploymentStatus.EXPIRED] } },
       include: { services: true },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
 
-    const recentCompleted = await prisma.deployment.findMany({
-      where: { status: DeploymentStatus.COMPLETED },
-      include: { services: true },
-      orderBy: { completedAt: "desc" },
-      take: 20,
-    });
-
-    const recentExpired = await prisma.deployment.findMany({
-      where: { status: DeploymentStatus.EXPIRED },
-      include: { services: true },
-      orderBy: { completedAt: "desc" },
-      take: 20,
-    });
-
-    const formatDeployment = (d: typeof activeDeployments[number]) => {
-      // Group services by group name
+    const formatDeployment = (d: typeof deployments[number]) => {
       const groups: Record<
         string,
         { total: number; ready: number; services: { service_id: string; ready: boolean; ready_at: string | null }[] }
@@ -280,19 +232,31 @@ export function registerRoutes(
         });
       }
 
+      // Derive effective status from services
+      const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
+      let derivedStatus: string;
+      if (d.status === DeploymentStatus.EXPIRED) {
+        derivedStatus = "EXPIRED";
+      } else if (allReady) {
+        derivedStatus = "COMPLETED";
+      } else {
+        derivedStatus = "ACTIVE";
+      }
+
       return {
         deployment_id: d.deploymentId,
-        status: d.status,
+        status: derivedStatus,
         first_registered_at: d.firstRegisteredAt.toISOString(),
-        completed_at: d.completedAt?.toISOString() ?? null,
         groups,
       };
     };
 
+    const formatted = deployments.map(formatDeployment);
+
     return reply.status(200).send({
-      active: activeDeployments.map(formatDeployment),
-      recent_completed: recentCompleted.map(formatDeployment),
-      recent_expired: recentExpired.map(formatDeployment),
+      active: formatted.filter((d) => d.status === "ACTIVE"),
+      recent_completed: formatted.filter((d) => d.status === "COMPLETED"),
+      recent_expired: formatted.filter((d) => d.status === "EXPIRED"),
     });
   });
 }
