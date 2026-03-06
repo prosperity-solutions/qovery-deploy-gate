@@ -1,8 +1,8 @@
 apiVersion: v2
 name: qovery-deploy-gate
 description: Zero-config synchronized traffic cutover for multi-service deployments on Qovery/Kubernetes
-version: 1.0.1
-appVersion: "1.0.1"
+version: 1.1.0
+appVersion: "1.1.0"
 type: application
 dependencies:
   - name: postgresql
