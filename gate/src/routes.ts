@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { DeploymentStatus, PrismaClient } from "@prisma/client";
+import { DeploymentStatus, PrismaClient } from "./generated/prisma/client.js";
 
 interface RegisterBody {
   deployment_id: string;

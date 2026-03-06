@@ -1,10 +1,12 @@
 import Fastify from "fastify";
-import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "./generated/prisma/client.js";
 import { registerRoutes } from "./routes.js";
 import { registerUI } from "./ui.js";
 import { env } from "./config.js";
 
-const prisma = new PrismaClient();
+const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
+const prisma = new PrismaClient({ adapter });
 const app = Fastify({ logger: true });
 
 registerRoutes(app, prisma, env.MIN_SETTLE_TIME);
