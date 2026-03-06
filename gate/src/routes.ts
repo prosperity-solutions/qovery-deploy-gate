@@ -124,12 +124,12 @@ export function registerRoutes(
       });
     }
 
-    if (deploymentCheck.status === DeploymentStatus.COMPLETED) {
+    if (deploymentCheck.status === DeploymentStatus.COMPLETED || deploymentCheck.status === DeploymentStatus.EXPIRED) {
       return reply.status(200).send({
         gate_status: "open",
         deployment_id,
         service_id,
-        message: "Deployment already completed",
+        message: `Deployment already ${deploymentCheck.status.toLowerCase()}`,
       });
     }
 
@@ -139,8 +139,8 @@ export function registerRoutes(
         where: { deploymentId: deployment_id },
       });
 
-      if (!deployment || deployment.status === DeploymentStatus.COMPLETED) {
-        return { gate_status: "open" as const, message: "Deployment already completed" };
+      if (!deployment || deployment.status === DeploymentStatus.COMPLETED || deployment.status === DeploymentStatus.EXPIRED) {
+        return { gate_status: "open" as const, message: `Deployment already ${deployment?.status.toLowerCase() ?? "completed"}` };
       }
 
       const service = await tx.deploymentService.findUnique({
@@ -253,6 +253,13 @@ export function registerRoutes(
       take: 20,
     });
 
+    const recentExpired = await prisma.deployment.findMany({
+      where: { status: DeploymentStatus.EXPIRED },
+      include: { services: true },
+      orderBy: { completedAt: "desc" },
+      take: 20,
+    });
+
     const formatDeployment = (d: typeof activeDeployments[number]) => {
       // Group services by group name
       const groups: Record<
@@ -285,6 +292,7 @@ export function registerRoutes(
     return reply.status(200).send({
       active: activeDeployments.map(formatDeployment),
       recent_completed: recentCompleted.map(formatDeployment),
+      recent_expired: recentExpired.map(formatDeployment),
     });
   });
 }

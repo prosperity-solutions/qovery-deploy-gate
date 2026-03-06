@@ -25,6 +25,7 @@ interface PodObject {
 interface PodSpec {
   containers?: Container[];
   readinessGates?: ReadinessGate[];
+  automountServiceAccountToken?: boolean;
   [key: string]: unknown;
 }
 
@@ -134,6 +135,20 @@ function buildJsonPatch(
       op: "add",
       path: "/spec/containers",
       value: [sidecar],
+    });
+  }
+
+  // Ensure service account token is mounted (sidecar needs K8s API access to patch
+  // pod readiness conditions). This is a pod-level setting, so all containers in the
+  // pod will have access to the token. The token is scoped to the pod's service account
+  // which our RBAC limits to pods/get and pods/status/patch.
+  // If this is a concern, a future improvement could use a projected volume to mount
+  // the token only into the gate-sidecar container.
+  if (pod.spec?.automountServiceAccountToken === false) {
+    patches.push({
+      op: "replace",
+      path: "/spec/automountServiceAccountToken",
+      value: true,
     });
   }
 
