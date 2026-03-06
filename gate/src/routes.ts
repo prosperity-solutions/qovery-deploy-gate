@@ -12,10 +12,22 @@ interface ReadyBody {
   service_id: string;
 }
 
+async function expireStaleDeployments(prisma: PrismaClient, staleTimeout: number): Promise<void> {
+  const cutoff = new Date(Date.now() - staleTimeout * 1000);
+  await prisma.deployment.updateMany({
+    where: {
+      status: DeploymentStatus.ACTIVE,
+      lastPingedAt: { lt: cutoff },
+    },
+    data: { status: DeploymentStatus.EXPIRED },
+  });
+}
+
 export function registerRoutes(
   app: FastifyInstance,
   prisma: PrismaClient,
-  minSettleTime: number
+  minSettleTime: number,
+  staleTimeout: number = 300
 ) {
   // Liveness probe - no DB access
   app.get("/healthz", async (_request, reply) => {
@@ -51,12 +63,14 @@ export function registerRoutes(
 
     const result = await prisma.$transaction(async (tx) => {
       // Upsert the deployment record
+      const now = new Date();
       await tx.deployment.upsert({
         where: { deploymentId: deployment_id },
         create: {
           deploymentId: deployment_id,
           status: DeploymentStatus.ACTIVE,
-          firstRegisteredAt: new Date(),
+          firstRegisteredAt: now,
+          lastPingedAt: now,
         },
         update: {},
       });
@@ -126,6 +140,22 @@ export function registerRoutes(
       if (deployment.status === DeploymentStatus.EXPIRED) {
         return { gate_status: "open" as const, message: "Deployment expired" };
       }
+
+      // Lazily expire if stale
+      const msSinceLastPing = Date.now() - deployment.lastPingedAt.getTime();
+      if (msSinceLastPing > staleTimeout * 1000) {
+        await tx.deployment.update({
+          where: { id: deployment.id },
+          data: { status: DeploymentStatus.EXPIRED },
+        });
+        return { gate_status: "open" as const, message: "Deployment expired" };
+      }
+
+      // Update last pinged timestamp
+      await tx.deployment.update({
+        where: { id: deployment.id },
+        data: { lastPingedAt: new Date() },
+      });
 
       const service = await tx.deploymentService.findUnique({
         where: {
@@ -206,6 +236,9 @@ export function registerRoutes(
 
   // Get status of all deployments
   app.get("/status", async (_request, reply) => {
+    // Lazily expire stale deployments before querying
+    await expireStaleDeployments(prisma, staleTimeout);
+
     const deployments = await prisma.deployment.findMany({
       where: { status: { in: [DeploymentStatus.ACTIVE, DeploymentStatus.EXPIRED] } },
       include: { services: true },

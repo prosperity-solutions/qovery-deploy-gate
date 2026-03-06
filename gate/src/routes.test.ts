@@ -17,7 +17,7 @@ describeWithDb("API Routes (integration)", () => {
     const adapter = new PrismaPg({ connectionString: DATABASE_URL! });
     prisma = new PrismaClient({ adapter });
     app = Fastify();
-    registerRoutes(app, prisma, 0); // 0s settle time for fast tests
+    registerRoutes(app, prisma, 0, 300); // 0s settle time, 300s stale timeout
     await app.ready();
   });
 
@@ -270,13 +270,76 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.active[0].groups.web.ready).toBe(0);
     expect(body.recent_completed).toHaveLength(0);
   });
+
+  it("GET /status derives COMPLETED status when all services are ready", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-9", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-9", service_id: "svc-b", group: "workers" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-9", service_id: "svc-a" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-9", service_id: "svc-b" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    expect(body.active).toHaveLength(0);
+    expect(body.recent_completed).toHaveLength(1);
+    expect(body.recent_completed[0].deployment_id).toBe("dep-9");
+    expect(body.recent_completed[0].status).toBe("COMPLETED");
+  });
+
+  it("POST /ready expires stale deployment and returns open", async () => {
+    // Register a deployment, then backdate lastPingedAt to make it stale
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-10", service_id: "svc-a", group: "web" },
+    });
+
+    // Backdate lastPingedAt to 10 minutes ago (well past the 300s stale timeout)
+    const staleTime = new Date(Date.now() - 600_000);
+    await prisma.deployment.update({
+      where: { deploymentId: "dep-10" },
+      data: { lastPingedAt: staleTime },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-10", service_id: "svc-a" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().gate_status).toBe("open");
+    expect(res.json().message).toBe("Deployment expired");
+
+    // Verify DB status is now EXPIRED
+    const deployment = await prisma.deployment.findUnique({
+      where: { deploymentId: "dep-10" },
+    });
+    expect(deployment!.status).toBe("EXPIRED");
+  });
 });
 
 describe("API Routes (unit - no DB)", () => {
   it("GET /healthz returns 200 without database", async () => {
     const app = Fastify();
     // Pass a dummy prisma - healthz doesn't use it
-    registerRoutes(app, {} as PrismaClient, 30);
+    registerRoutes(app, {} as PrismaClient, 30, 300);
     await app.ready();
 
     const res = await app.inject({ method: "GET", url: "/healthz" });

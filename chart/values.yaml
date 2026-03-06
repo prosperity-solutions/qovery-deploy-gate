@@ -6,7 +6,7 @@ gate:
     pullPolicy: IfNotPresent
   replicas: 2
   minSettleTime: 30
-  deploymentTtl: 7200    # seconds before active deployments are marked expired (default 2h)
+  staleTimeout: 300      # seconds since last /ready ping before active deployments expire (default 5m)
   port: 8080
   resources:
     requests:

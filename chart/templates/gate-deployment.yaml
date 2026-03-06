@@ -43,8 +43,8 @@ spec:
               value: {{ .Values.gate.minSettleTime | quote }}
             - name: PORT
               value: {{ .Values.gate.port | quote }}
-            - name: DEPLOYMENT_TTL
-              value: {{ .Values.gate.deploymentTtl | quote }}
+            - name: STALE_TIMEOUT
+              value: {{ .Values.gate.staleTimeout | quote }}
           livenessProbe:
             httpGet:
               path: /healthz
