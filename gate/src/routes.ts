@@ -1,5 +1,5 @@
 import { FastifyInstance } from "fastify";
-import { DeploymentStatus, PrismaClient } from "./generated/prisma/client.js";
+import { PrismaClient } from "./generated/prisma/client.js";
 
 interface RegisterBody {
   deployment_id: string;
@@ -12,15 +12,8 @@ interface ReadyBody {
   service_id: string;
 }
 
-async function expireStaleDeployments(prisma: PrismaClient, staleTimeout: number): Promise<void> {
-  const cutoff = new Date(Date.now() - staleTimeout * 1000);
-  await prisma.deployment.updateMany({
-    where: {
-      status: DeploymentStatus.ACTIVE,
-      lastPingedAt: { lt: cutoff },
-    },
-    data: { status: DeploymentStatus.EXPIRED },
-  });
+function isStale(lastPingedAt: Date, staleTimeout: number): boolean {
+  return Date.now() - lastPingedAt.getTime() > staleTimeout * 1000;
 }
 
 export function registerRoutes(
@@ -62,13 +55,11 @@ export function registerRoutes(
     const { deployment_id, service_id, group } = request.body;
 
     const result = await prisma.$transaction(async (tx) => {
-      // Upsert the deployment record
       const now = new Date();
       await tx.deployment.upsert({
         where: { deploymentId: deployment_id },
         create: {
           deploymentId: deployment_id,
-          status: DeploymentStatus.ACTIVE,
           firstRegisteredAt: now,
           lastPingedAt: now,
         },
@@ -126,7 +117,6 @@ export function registerRoutes(
   }, async (request, reply) => {
     const { deployment_id, service_id } = request.body;
 
-    // All state mutations and group evaluation in a single transaction
     const result = await prisma.$transaction(async (tx) => {
       const deployment = await tx.deployment.findUnique({
         where: { deploymentId: deployment_id },
@@ -136,30 +126,16 @@ export function registerRoutes(
         return { gate_status: "not_found" as const, reason: `Unknown deployment: ${deployment_id}` };
       }
 
-      // Expired deployments always open the gate
-      if (deployment.status === DeploymentStatus.EXPIRED) {
+      // Stale deployment — gate opens without refreshing lastPingedAt
+      if (isStale(deployment.lastPingedAt, staleTimeout)) {
         return { gate_status: "open" as const, message: "Deployment expired" };
       }
 
-      // Lazily expire if stale
-      const msSinceLastPing = Date.now() - deployment.lastPingedAt.getTime();
-      if (msSinceLastPing > staleTimeout * 1000) {
-        await tx.deployment.update({
-          where: { id: deployment.id },
-          data: { status: DeploymentStatus.EXPIRED },
-        });
-        return { gate_status: "open" as const, message: "Deployment expired" };
-      }
-
-      // Update last pinged timestamp (only if still ACTIVE to avoid resurrecting expired deployments)
-      const updated = await tx.deployment.updateMany({
-        where: { id: deployment.id, status: DeploymentStatus.ACTIVE },
+      // Update last pinged timestamp
+      await tx.deployment.update({
+        where: { id: deployment.id },
         data: { lastPingedAt: new Date() },
       });
-      if (updated.count === 0) {
-        // Concurrently expired by another request
-        return { gate_status: "open" as const, message: "Deployment expired" };
-      }
 
       const service = await tx.deploymentService.findUnique({
         where: {
@@ -240,15 +216,7 @@ export function registerRoutes(
 
   // Get status of all deployments
   app.get("/status", async (_request, reply) => {
-    // Lazily expire stale deployments before querying (best-effort)
-    try {
-      await expireStaleDeployments(prisma, staleTimeout);
-    } catch {
-      // Non-fatal — status page still works, expiration will happen on next request
-    }
-
     const deployments = await prisma.deployment.findMany({
-      where: { status: { in: [DeploymentStatus.ACTIVE, DeploymentStatus.COMPLETED, DeploymentStatus.EXPIRED] } },
       include: { services: true },
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -273,12 +241,12 @@ export function registerRoutes(
         });
       }
 
-      // Derive effective status: allReady wins over EXPIRED (successful deploys don't flip to expired)
+      // Derive status entirely from data
       const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
       let derivedStatus: string;
       if (allReady) {
         derivedStatus = "COMPLETED";
-      } else if (d.status === DeploymentStatus.EXPIRED) {
+      } else if (isStale(d.lastPingedAt, staleTimeout)) {
         derivedStatus = "EXPIRED";
       } else {
         derivedStatus = "ACTIVE";

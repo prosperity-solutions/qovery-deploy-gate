@@ -7,24 +7,16 @@ datasource db {
   provider = "postgresql"
 }
 
-enum DeploymentStatus {
-  ACTIVE
-  COMPLETED
-  EXPIRED
-}
-
 model Deployment {
-  id                Int              @id @default(autoincrement())
-  deploymentId      String           @unique @map("deployment_id")
-  status            DeploymentStatus @default(ACTIVE)
-  firstRegisteredAt DateTime         @map("first_registered_at")
-  lastPingedAt      DateTime         @map("last_pinged_at")
-  createdAt         DateTime         @default(now()) @map("created_at")
-  updatedAt         DateTime         @updatedAt @map("updated_at")
+  id                Int      @id @default(autoincrement())
+  deploymentId      String   @unique @map("deployment_id")
+  firstRegisteredAt DateTime @map("first_registered_at")
+  lastPingedAt      DateTime @map("last_pinged_at")
+  createdAt         DateTime @default(now()) @map("created_at")
+  updatedAt         DateTime @updatedAt @map("updated_at")
 
   services DeploymentService[]
 
-  @@index([status])
   @@index([createdAt])
   @@map("deployments")
 }

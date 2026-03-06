@@ -61,7 +61,7 @@ describeWithDb("API Routes (integration)", () => {
       where: { deploymentId: "dep-1" },
     });
     expect(deployment).not.toBeNull();
-    expect(deployment!.status).toBe("ACTIVE");
+    expect(deployment!.lastPingedAt).toBeDefined();
   });
 
   it("POST /register is idempotent", async () => {
@@ -194,7 +194,7 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.group_services_ready).toBe(2);
   });
 
-  it("POST /ready keeps deployment ACTIVE in DB (status derived at query time)", async () => {
+  it("POST /ready does not store status — it is derived at query time", async () => {
     // Two groups, one service each
     await app.inject({
       method: "POST",
@@ -218,11 +218,10 @@ describeWithDb("API Routes (integration)", () => {
       payload: { deployment_id: "dep-6", service_id: "svc-b" },
     });
 
-    // DB status stays ACTIVE — COMPLETED is derived at query time in /status
-    const deployment = await prisma.deployment.findUnique({
-      where: { deploymentId: "dep-6" },
-    });
-    expect(deployment!.status).toBe("ACTIVE");
+    // DB has no status field — /status derives COMPLETED from service readyAt
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+    expect(body.recent_completed.some((d: { deployment_id: string }) => d.deployment_id === "dep-6")).toBe(true);
   });
 
   it("POST /ready returns open when called again after all services ready", async () => {
@@ -326,12 +325,6 @@ describeWithDb("API Routes (integration)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json().gate_status).toBe("open");
     expect(res.json().message).toBe("Deployment expired");
-
-    // Verify DB status is now EXPIRED
-    const deployment = await prisma.deployment.findUnique({
-      where: { deploymentId: "dep-10" },
-    });
-    expect(deployment!.status).toBe("EXPIRED");
   });
 
   it("GET /status lazily expires stale deployments", async () => {
