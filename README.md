@@ -137,6 +137,7 @@ All identity is derived from Qovery's own pod labels — no user-managed identif
 gate:
   replicas: 2
   minSettleTime: 30        # seconds to wait after first registration
+  staleTimeout: 300        # seconds since last /ready ping before expiring (default 5m)
   database:
     external: false        # use built-in Postgres
     url: ""                # connection string if external
@@ -161,9 +162,16 @@ Every failure is **fail-closed** — Qovery's existing rollback mechanisms handl
 | Gate down | Sidecar can't reach gate → old pods keep serving |
 | Webhook down | Pod creation rejected → Qovery deployment stalls |
 | Service never boots | Group never completes → old pods keep serving, Qovery rolls back |
+| Deployment cancelled | Sidecars stop polling → deployment expires after stale timeout → old pods keep serving |
 | Gate replica restarts | Stateless, reconnects to Postgres → no impact |
 
 ## Worth Mentioning
+
+### Stale Deployment Expiration
+
+Deployments track a `lastPingedAt` timestamp, updated on every `/ready` call from a sidecar. If no sidecar has polled for longer than `staleTimeout` (default 5 minutes), the deployment is lazily marked as EXPIRED and the gate opens — letting any remaining sidecars proceed.
+
+This handles cancelled or failed deployments without a background timer. Expiration is checked on `/ready` calls and `/status` queries (the UI polls every 5 seconds), so stale deployments are cleaned up promptly.
 
 ### Service Account Token Mounting
 
