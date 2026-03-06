@@ -35,7 +35,7 @@ spec:
               protocol: TCP
           env:
             - name: GATE_URL
-              value: "http://{{ include "qovery-deploy-gate.fullname" . }}-gate:{{ .Values.gate.port }}"
+              value: "http://{{ include "qovery-deploy-gate.fullname" . }}-gate.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.gate.port }}"
             - name: SIDECAR_IMAGE
               value: "{{ .Values.sidecar.image.repository }}:{{ .Values.sidecar.image.tag | default .Chart.AppVersion }}"
             - name: PORT
