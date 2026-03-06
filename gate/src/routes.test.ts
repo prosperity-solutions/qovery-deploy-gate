@@ -390,6 +390,32 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.recent_completed[0].status).toBe("COMPLETED");
     expect(body.recent_expired).toHaveLength(0);
   });
+  it("POST /ready returns waiting when settle time has not elapsed", async () => {
+    // Create a separate app with 9999s settle time
+    const settleApp = Fastify();
+    registerRoutes(settleApp, prisma, 9999, 300);
+    await settleApp.ready();
+
+    await settleApp.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-13", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const res = await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-13", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gate_status).toBe("waiting");
+    expect(body.all_group_services_ready).toBe(true);
+    expect(body.settle_time_remaining_seconds).toBeGreaterThan(0);
+
+    await settleApp.close();
+  });
 });
 
 describe("API Routes (unit - no DB)", () => {

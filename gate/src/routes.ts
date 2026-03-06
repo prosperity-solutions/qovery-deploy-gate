@@ -69,11 +69,11 @@ export function registerRoutes(
           firstRegisteredAt: now,
           lastPingedAt: now,
         },
-        update: { lastPingedAt: now },
+        update: {},
       });
 
       // Upsert the pod registration (idempotent, safe under concurrent requests)
-      const ns = namespace || "";
+      const ns = namespace ?? "";
       const existingBefore = await tx.deploymentService.findUnique({
         where: {
           deploymentId_serviceId_podName_namespace: {
@@ -162,7 +162,7 @@ export function registerRoutes(
             deploymentId: deployment_id,
             serviceId: service_id,
             podName: pod_name,
-            namespace: namespace || "",
+            namespace: namespace ?? "",
           },
         },
       });
