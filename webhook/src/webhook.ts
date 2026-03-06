@@ -201,7 +201,7 @@ export function registerWebhook(
   app: FastifyInstance,
   config: WebhookConfig
 ): void {
-  app.post("/mutate", async (request, reply) => {
+  app.post("/mutate", async (request) => {
     const admissionReview = request.body as AdmissionReview;
     const req = admissionReview.request;
 
