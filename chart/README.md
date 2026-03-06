@@ -28,32 +28,9 @@ helm dependency build ./chart
 helm install qovery-deploy-gate ./chart -n qovery-deploy-gate --create-namespace
 ```
 
-## Docker Hub Pull Secret
-
-The bundled PostgreSQL subchart (Bitnami) pulls images from Docker Hub, which enforces rate limits for unauthenticated pulls. If you have a Docker Hub account, create a pull secret and reference it:
-
-```bash
-kubectl create secret docker-registry dockerhub-credentials \
-  --docker-server=https://index.docker.io/v1/ \
-  --docker-username=<your-username> \
-  --docker-password=<your-access-token> \
-  -n qovery-deploy-gate
-```
-
-Then set in your values:
-
-```yaml
-global:
-  imagePullSecrets:
-    - name: dockerhub-credentials
-```
-
 ## Key Configuration
 
 ```yaml
-global:
-  imagePullSecrets: []          # Docker Hub pull secret for PostgreSQL images
-
 gate:
   replicas: 2
   minSettleTime: 30           # seconds before gate can open
