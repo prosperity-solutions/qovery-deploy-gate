@@ -177,39 +177,6 @@ function buildJsonPatch(
   return patches;
 }
 
-async function fireAndForgetRegister(
-  gateUrl: string,
-  labels: Record<string, string>,
-  logger: { error: (msg: string, ...args: unknown[]) => void }
-): Promise<void> {
-  const deploymentId = labels["qovery.com/deployment-id"] || "";
-  const serviceId = labels["qovery.com/service-id"] || "";
-  const group = labels["qovery-deploy-gate.life.li/group"] || "";
-
-  try {
-    const response = await fetch(`${gateUrl}/register`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        deployment_id: deploymentId,
-        service_id: serviceId,
-        group,
-      }),
-      signal: AbortSignal.timeout(5000),
-    });
-
-    if (!response.ok) {
-      logger.error(
-        "Failed to register with gate: %s %s",
-        response.status,
-        response.statusText
-      );
-    }
-  } catch (err) {
-    logger.error("Error registering with gate: %s", err);
-  }
-}
-
 // ---- Route registration ----
 
 export function registerWebhook(
@@ -270,12 +237,9 @@ export function registerWebhook(
     const patches = buildJsonPatch(pod, sidecar);
     const patchBase64 = Buffer.from(JSON.stringify(patches)).toString("base64");
 
-    // Fire-and-forget registration with the gate service (skip on dry-run)
-    if (!req.dryRun) {
-      fireAndForgetRegister(config.gateUrl, labels, request.log).catch(() => {
-        // Swallow — already logged inside the function
-      });
-    }
+    // Registration is handled by the sidecar on startup (it knows the actual pod name).
+    // The webhook only injects the sidecar — it does not register with the gate, because
+    // at admission time the pod name is not yet assigned (only generateName is available).
 
     return {
       apiVersion: "admission.k8s.io/v1",

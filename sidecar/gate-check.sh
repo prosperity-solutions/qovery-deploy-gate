@@ -71,17 +71,18 @@ check_containers_ready() {
   [ "$READY" = "true" ]
 }
 
-# --- Helper: register with gate (fallback if webhook registration failed) ---
+# --- Helper: register with gate ---
 register_with_gate() {
   BODY=$(jq -n --arg d "$GATE_DEPLOYMENT_ID" --arg s "$GATE_SERVICE_ID" --arg g "$GATE_GROUP" \
-    '{deployment_id: $d, service_id: $s, group: $g}')
+    --arg p "$GATE_POD_NAME" --arg ns "$GATE_POD_NAMESPACE" \
+    '{deployment_id: $d, service_id: $s, pod_name: $p, namespace: $ns, group: $g}')
 
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${GATE_URL}/register" \
     -H "Content-Type: application/json" \
     -d "$BODY" 2>/dev/null) || return 1
 
   if [ "$HTTP_CODE" -ge 200 ] && [ "$HTTP_CODE" -lt 300 ]; then
-    log "Successfully registered with gate (fallback)"
+    log "Successfully registered with gate"
     return 0
   else
     log_error "Failed to register with gate, HTTP status: ${HTTP_CODE}"
@@ -89,10 +90,28 @@ register_with_gate() {
   fi
 }
 
+# --- Register with gate on startup ---
+# The sidecar is the sole registrar (webhook only injects the sidecar).
+# Retry registration until it succeeds — the gate may not be reachable immediately.
+REGISTERED=false
+for i in 1 2 3 4 5; do
+  if register_with_gate; then
+    REGISTERED=true
+    break
+  fi
+  log "Registration attempt $i failed, retrying in ${GATE_POLL_INTERVAL}s..."
+  sleep "$GATE_POLL_INTERVAL"
+done
+
+if [ "$REGISTERED" = "false" ]; then
+  log "Initial registration failed after 5 attempts, will retry via fallback in main loop"
+fi
+
 # --- Helper: post ready status to gate ---
 post_ready() {
   BODY=$(jq -n --arg d "$GATE_DEPLOYMENT_ID" --arg s "$GATE_SERVICE_ID" \
-    '{deployment_id: $d, service_id: $s}')
+    --arg p "$GATE_POD_NAME" --arg ns "$GATE_POD_NAMESPACE" \
+    '{deployment_id: $d, service_id: $s, pod_name: $p, namespace: $ns}')
 
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${GATE_URL}/ready" \
     -H "Content-Type: application/json" \
