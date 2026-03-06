@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import Fastify, { FastifyInstance } from "fastify";
-import { PrismaClient } from "@prisma/client";
+import { PrismaPg } from "@prisma/adapter-pg";
+import { PrismaClient } from "./generated/prisma/client.js";
 import { registerRoutes } from "./routes.js";
 
 const DATABASE_URL = process.env.DATABASE_URL;
@@ -13,7 +14,8 @@ describeWithDb("API Routes (integration)", () => {
   let prisma: PrismaClient;
 
   beforeAll(async () => {
-    prisma = new PrismaClient();
+    const adapter = new PrismaPg({ connectionString: DATABASE_URL! });
+    prisma = new PrismaClient({ adapter });
     app = Fastify();
     registerRoutes(app, prisma, 0); // 0s settle time for fast tests
     await app.ready();

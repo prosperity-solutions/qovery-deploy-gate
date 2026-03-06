@@ -2,6 +2,7 @@ FROM node:24.14.0-alpine AS builder
 WORKDIR /app
 COPY package*.json ./
 COPY prisma ./prisma/
+COPY prisma.config.ts ./
 RUN npm ci
 RUN npx prisma generate
 COPY tsconfig.json ./
@@ -13,7 +14,8 @@ LABEL org.opencontainers.image.description="qovery-deploy-gate API server and we
 WORKDIR /app
 COPY --from=builder /app/package*.json ./
 COPY --from=builder /app/prisma ./prisma
-RUN npm ci --omit=dev && npx prisma generate && npm cache clean --force
+COPY --from=builder /app/prisma.config.ts ./
+RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=builder /app/dist ./dist
 ENV NODE_ENV=production
 USER 1000:1000

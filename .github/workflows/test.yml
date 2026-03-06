@@ -33,6 +33,8 @@ jobs:
 
       - name: Generate Prisma client
         run: cd gate && npx prisma generate
+        env:
+          DATABASE_URL: postgresql://test:test@localhost:5432/deploy_gate_test
 
       - name: Run migrations
         run: cd gate && npx prisma migrate deploy
