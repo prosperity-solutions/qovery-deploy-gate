@@ -163,6 +163,16 @@ Every failure is **fail-closed** — Qovery's existing rollback mechanisms handl
 | Service never boots | Group never completes → old pods keep serving, Qovery rolls back |
 | Gate replica restarts | Stateless, reconnects to Postgres → no impact |
 
+## Worth Mentioning
+
+### Service Account Token Mounting
+
+The gate-sidecar needs access to the Kubernetes API to patch pod readiness conditions. Some platforms (including Qovery) disable `automountServiceAccountToken` on pods by default. When the webhook detects this, it patches the field to `true` so the service account token gets mounted.
+
+This is a **pod-level** setting — all containers in the pod (including your application) will have access to the token. The token is scoped to the pod's service account, and the RBAC rules only grant `pods/get` and `pods/status/patch`, so the blast radius is minimal.
+
+If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
+
 ## Development
 
 ```bash
