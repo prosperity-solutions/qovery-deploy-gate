@@ -25,6 +25,7 @@ interface PodObject {
 interface PodSpec {
   containers?: Container[];
   readinessGates?: ReadinessGate[];
+  automountServiceAccountToken?: boolean;
   [key: string]: unknown;
 }
 
@@ -134,6 +135,15 @@ function buildJsonPatch(
       op: "add",
       path: "/spec/containers",
       value: [sidecar],
+    });
+  }
+
+  // Ensure service account token is mounted (sidecar needs K8s API access)
+  if (pod.spec?.automountServiceAccountToken === false) {
+    patches.push({
+      op: "replace",
+      path: "/spec/automountServiceAccountToken",
+      value: true,
     });
   }
 
