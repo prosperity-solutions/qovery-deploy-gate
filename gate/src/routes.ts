@@ -4,12 +4,16 @@ import { PrismaClient } from "./generated/prisma/client.js";
 interface RegisterBody {
   deployment_id: string;
   service_id: string;
+  pod_name: string;
+  namespace?: string;
   group: string;
 }
 
 interface ReadyBody {
   deployment_id: string;
   service_id: string;
+  pod_name: string;
+  namespace?: string;
 }
 
 function isStale(lastPingedAt: Date, staleTimeout: number): boolean {
@@ -37,22 +41,24 @@ export function registerRoutes(
     }
   });
 
-  // Register a service for a deployment
+  // Register a pod for a deployment
   app.post<{ Body: RegisterBody }>("/register", {
     schema: {
       body: {
         type: "object",
-        required: ["deployment_id", "service_id", "group"],
+        required: ["deployment_id", "service_id", "pod_name", "group"],
         additionalProperties: false,
         properties: {
           deployment_id: { type: "string", minLength: 1, maxLength: 255 },
           service_id: { type: "string", minLength: 1, maxLength: 255 },
+          pod_name: { type: "string", minLength: 1, maxLength: 255 },
+          namespace: { type: "string", maxLength: 255 },
           group: { type: "string", minLength: 1, maxLength: 255 },
         },
       },
     },
   }, async (request, reply) => {
-    const { deployment_id, service_id, group } = request.body;
+    const { deployment_id, service_id, pod_name, namespace, group } = request.body;
 
     const result = await prisma.$transaction(async (tx) => {
       const now = new Date();
@@ -66,12 +72,14 @@ export function registerRoutes(
         update: { lastPingedAt: now },
       });
 
-      // Try to create the service registration (idempotent)
+      // Try to create the pod registration (idempotent)
       const existing = await tx.deploymentService.findUnique({
         where: {
-          deploymentId_serviceId: {
+          deploymentId_serviceId_podName_namespace: {
             deploymentId: deployment_id,
             serviceId: service_id,
+            podName: pod_name,
+            namespace: namespace || "",
           },
         },
       });
@@ -84,6 +92,8 @@ export function registerRoutes(
         data: {
           deploymentId: deployment_id,
           serviceId: service_id,
+          podName: pod_name,
+          namespace: namespace || "",
           groupName: group,
         },
       });
@@ -95,27 +105,30 @@ export function registerRoutes(
     return reply.status(statusCode).send({
       deployment_id,
       service_id,
+      pod_name,
       group,
       registered_at: result.service.registeredAt.toISOString(),
       already_registered: !result.created,
     });
   });
 
-  // Mark a service as ready and check gate status
+  // Mark a pod as ready and check gate status
   app.post<{ Body: ReadyBody }>("/ready", {
     schema: {
       body: {
         type: "object",
-        required: ["deployment_id", "service_id"],
+        required: ["deployment_id", "service_id", "pod_name"],
         additionalProperties: false,
         properties: {
           deployment_id: { type: "string", minLength: 1, maxLength: 255 },
           service_id: { type: "string", minLength: 1, maxLength: 255 },
+          pod_name: { type: "string", minLength: 1, maxLength: 255 },
+          namespace: { type: "string", maxLength: 255 },
         },
       },
     },
   }, async (request, reply) => {
-    const { deployment_id, service_id } = request.body;
+    const { deployment_id, service_id, pod_name, namespace } = request.body;
 
     const result = await prisma.$transaction(async (tx) => {
       const deployment = await tx.deployment.findUnique({
@@ -139,18 +152,20 @@ export function registerRoutes(
 
       const service = await tx.deploymentService.findUnique({
         where: {
-          deploymentId_serviceId: {
+          deploymentId_serviceId_podName_namespace: {
             deploymentId: deployment_id,
             serviceId: service_id,
+            podName: pod_name,
+            namespace: namespace || "",
           },
         },
       });
 
       if (!service) {
-        return { gate_status: "not_found" as const, reason: `Service ${service_id} is not registered for deployment ${deployment_id}` };
+        return { gate_status: "not_found" as const, reason: `Pod ${pod_name} (service ${service_id}) is not registered for deployment ${deployment_id}` };
       }
 
-      // Mark the service as ready if not already
+      // Mark the pod as ready if not already
       if (!service.readyAt) {
         await tx.deploymentService.update({
           where: { id: service.id },
@@ -158,7 +173,7 @@ export function registerRoutes(
         });
       }
 
-      // Check if all services in the same group are ready
+      // Check if all pods in the same group are ready
       const groupServices = await tx.deploymentService.findMany({
         where: {
           deploymentId: deployment_id,
@@ -194,7 +209,7 @@ export function registerRoutes(
         group: service.groupName,
         group_services_total: groupServices.length,
         group_services_ready: groupServices.length - pendingServices.length,
-        pending_services: pendingServices.map((s) => s.serviceId),
+        pending_services: pendingServices.map((s) => `${s.serviceId}/${s.podName}`),
         settle_time_remaining_seconds: allGroupReady ? settleTimeRemainingSeconds : undefined,
         all_group_services_ready: allGroupReady,
       };
@@ -211,12 +226,17 @@ export function registerRoutes(
       ...result,
       deployment_id,
       service_id,
+      pod_name,
     });
   });
 
   // Get status of all deployments
   app.get("/status", async (_request, reply) => {
+    // Only show deployments from the last 24 hours
+    const cutoff = new Date(Date.now() - 24 * 60 * 60 * 1000);
+
     const deployments = await prisma.deployment.findMany({
+      where: { createdAt: { gt: cutoff } },
       include: { services: true },
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -225,7 +245,7 @@ export function registerRoutes(
     const formatDeployment = (d: typeof deployments[number]) => {
       const groups: Record<
         string,
-        { total: number; ready: number; services: { service_id: string; ready: boolean; ready_at: string | null }[] }
+        { total: number; ready: number; services: { service_id: string; pod_name: string; namespace: string; ready: boolean; ready_at: string | null }[] }
       > = {};
 
       for (const svc of d.services) {
@@ -236,6 +256,8 @@ export function registerRoutes(
         if (svc.readyAt) groups[svc.groupName].ready++;
         groups[svc.groupName].services.push({
           service_id: svc.serviceId,
+          pod_name: svc.podName,
+          namespace: svc.namespace,
           ready: svc.readyAt !== null,
           ready_at: svc.readyAt?.toISOString() ?? null,
         });
@@ -243,7 +265,7 @@ export function registerRoutes(
 
       // Derive status entirely from data
       const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
-      let derivedStatus: string;
+      let derivedStatus: "COMPLETED" | "EXPIRED" | "ACTIVE";
       if (allReady) {
         derivedStatus = "COMPLETED";
       } else if (isStale(d.lastPingedAt, staleTimeout)) {

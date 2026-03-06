@@ -180,6 +180,7 @@ function buildJsonPatch(
 async function fireAndForgetRegister(
   gateUrl: string,
   labels: Record<string, string>,
+  podMeta: { name: string; namespace: string },
   logger: { error: (msg: string, ...args: unknown[]) => void }
 ): Promise<void> {
   const deploymentId = labels["qovery.com/deployment-id"] || "";
@@ -193,6 +194,8 @@ async function fireAndForgetRegister(
       body: JSON.stringify({
         deployment_id: deploymentId,
         service_id: serviceId,
+        pod_name: podMeta.name,
+        namespace: podMeta.namespace,
         group,
       }),
       signal: AbortSignal.timeout(5000),
@@ -271,8 +274,13 @@ export function registerWebhook(
     const patchBase64 = Buffer.from(JSON.stringify(patches)).toString("base64");
 
     // Fire-and-forget registration with the gate service (skip on dry-run)
+    // Pod name may be empty at admission time (generateName), sidecar will re-register with actual name
     if (!req.dryRun) {
-      fireAndForgetRegister(config.gateUrl, labels, request.log).catch(() => {
+      const podMeta = {
+        name: pod.metadata?.name || pod.metadata?.generateName || "",
+        namespace: pod.metadata?.namespace || "",
+      };
+      fireAndForgetRegister(config.gateUrl, labels, podMeta, request.log).catch(() => {
         // Swallow — already logged inside the function
       });
     }

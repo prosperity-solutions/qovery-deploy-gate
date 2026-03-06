@@ -25,13 +25,15 @@ model DeploymentService {
   id           Int       @id @default(autoincrement())
   deploymentId String    @map("deployment_id")
   serviceId    String    @map("service_id")
+  podName      String    @map("pod_name")
+  namespace    String    @default("")
   groupName    String    @map("group_name")
   registeredAt DateTime  @default(now()) @map("registered_at")
   readyAt      DateTime? @map("ready_at")
 
   deployment Deployment @relation(fields: [deploymentId], references: [deploymentId])
 
-  @@unique([deploymentId, serviceId])
+  @@unique([deploymentId, serviceId, podName, namespace])
   @@index([deploymentId])
   @@map("deployment_services")
 }

@@ -74,7 +74,8 @@ check_containers_ready() {
 # --- Helper: register with gate (fallback if webhook registration failed) ---
 register_with_gate() {
   BODY=$(jq -n --arg d "$GATE_DEPLOYMENT_ID" --arg s "$GATE_SERVICE_ID" --arg g "$GATE_GROUP" \
-    '{deployment_id: $d, service_id: $s, group: $g}')
+    --arg p "$GATE_POD_NAME" --arg ns "$GATE_POD_NAMESPACE" \
+    '{deployment_id: $d, service_id: $s, pod_name: $p, namespace: $ns, group: $g}')
 
   HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST "${GATE_URL}/register" \
     -H "Content-Type: application/json" \
@@ -92,7 +93,8 @@ register_with_gate() {
 # --- Helper: post ready status to gate ---
 post_ready() {
   BODY=$(jq -n --arg d "$GATE_DEPLOYMENT_ID" --arg s "$GATE_SERVICE_ID" \
-    '{deployment_id: $d, service_id: $s}')
+    --arg p "$GATE_POD_NAME" --arg ns "$GATE_POD_NAMESPACE" \
+    '{deployment_id: $d, service_id: $s, pod_name: $p, namespace: $ns}')
 
   RESPONSE=$(curl -s -w "\n%{http_code}" -X POST "${GATE_URL}/ready" \
     -H "Content-Type: application/json" \

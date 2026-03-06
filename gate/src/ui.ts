@@ -312,7 +312,9 @@ export function registerUI(app: FastifyInstance) {
         for (const svc of g.services) {
           const cls = svc.ready ? 'service-ready' : 'service-pending';
           const icon = svc.ready ? '&#10003;' : '&#9679;';
-          servicesHtml += '<span class="service-tag ' + cls + '">' + icon + ' ' + esc(svc.service_id) + '</span>';
+          const ns = svc.namespace ? esc(svc.namespace) + '/' : '';
+          const label = svc.pod_name ? ns + esc(svc.pod_name) : esc(svc.service_id);
+          servicesHtml += '<span class="service-tag ' + cls + '" title="' + esc(svc.service_id) + '">' + icon + ' ' + label + '</span>';
         }
 
         groupsHtml += '<div class="group">' +
