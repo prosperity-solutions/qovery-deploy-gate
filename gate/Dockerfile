@@ -7,7 +7,7 @@ RUN npm ci
 RUN npx prisma generate
 COPY tsconfig.json ./
 COPY src ./src/
-RUN npm run build
+RUN npm run build && cp -r src/generated dist/
 
 FROM node:24.14.0-alpine
 LABEL org.opencontainers.image.description="qovery-deploy-gate API server and web dashboard — coordinates synchronized traffic cutover for multi-service deployments on Qovery"
