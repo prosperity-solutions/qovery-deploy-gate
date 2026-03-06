@@ -333,6 +333,59 @@ describeWithDb("API Routes (integration)", () => {
     });
     expect(deployment!.status).toBe("EXPIRED");
   });
+
+  it("GET /status lazily expires stale deployments", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-11", service_id: "svc-a", group: "web" },
+    });
+
+    // Backdate lastPingedAt to make it stale
+    const staleTime = new Date(Date.now() - 600_000);
+    await prisma.deployment.update({
+      where: { deploymentId: "dep-11" },
+      data: { lastPingedAt: staleTime },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    // Should appear as expired, not active
+    expect(body.active).toHaveLength(0);
+    expect(body.recent_expired).toHaveLength(1);
+    expect(body.recent_expired[0].deployment_id).toBe("dep-11");
+  });
+
+  it("GET /status shows completed deployment as COMPLETED even after stale timeout", async () => {
+    // Register and complete a deployment
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-12", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-12", service_id: "svc-a" },
+    });
+
+    // Backdate lastPingedAt to make it stale — but all services are ready
+    const staleTime = new Date(Date.now() - 600_000);
+    await prisma.deployment.update({
+      where: { deploymentId: "dep-12" },
+      data: { lastPingedAt: staleTime },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    // Should still show as COMPLETED, not EXPIRED (allReady wins)
+    expect(body.recent_completed).toHaveLength(1);
+    expect(body.recent_completed[0].deployment_id).toBe("dep-12");
+    expect(body.recent_completed[0].status).toBe("COMPLETED");
+    expect(body.recent_expired).toHaveLength(0);
+  });
 });
 
 describe("API Routes (unit - no DB)", () => {

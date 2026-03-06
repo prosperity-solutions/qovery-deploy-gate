@@ -72,7 +72,7 @@ export function registerRoutes(
           firstRegisteredAt: now,
           lastPingedAt: now,
         },
-        update: {},
+        update: { lastPingedAt: now },
       });
 
       // Try to create the service registration (idempotent)
@@ -151,11 +151,15 @@ export function registerRoutes(
         return { gate_status: "open" as const, message: "Deployment expired" };
       }
 
-      // Update last pinged timestamp
-      await tx.deployment.update({
-        where: { id: deployment.id },
+      // Update last pinged timestamp (only if still ACTIVE to avoid resurrecting expired deployments)
+      const updated = await tx.deployment.updateMany({
+        where: { id: deployment.id, status: DeploymentStatus.ACTIVE },
         data: { lastPingedAt: new Date() },
       });
+      if (updated.count === 0) {
+        // Concurrently expired by another request
+        return { gate_status: "open" as const, message: "Deployment expired" };
+      }
 
       const service = await tx.deploymentService.findUnique({
         where: {
@@ -236,11 +240,15 @@ export function registerRoutes(
 
   // Get status of all deployments
   app.get("/status", async (_request, reply) => {
-    // Lazily expire stale deployments before querying
-    await expireStaleDeployments(prisma, staleTimeout);
+    // Lazily expire stale deployments before querying (best-effort)
+    try {
+      await expireStaleDeployments(prisma, staleTimeout);
+    } catch {
+      // Non-fatal — status page still works, expiration will happen on next request
+    }
 
     const deployments = await prisma.deployment.findMany({
-      where: { status: { in: [DeploymentStatus.ACTIVE, DeploymentStatus.EXPIRED] } },
+      where: { status: { in: [DeploymentStatus.ACTIVE, DeploymentStatus.COMPLETED, DeploymentStatus.EXPIRED] } },
       include: { services: true },
       orderBy: { createdAt: "desc" },
       take: 100,
@@ -265,13 +273,13 @@ export function registerRoutes(
         });
       }
 
-      // Derive effective status from services
+      // Derive effective status: allReady wins over EXPIRED (successful deploys don't flip to expired)
       const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
       let derivedStatus: string;
-      if (d.status === DeploymentStatus.EXPIRED) {
-        derivedStatus = "EXPIRED";
-      } else if (allReady) {
+      if (allReady) {
         derivedStatus = "COMPLETED";
+      } else if (d.status === DeploymentStatus.EXPIRED) {
+        derivedStatus = "EXPIRED";
       } else {
         derivedStatus = "ACTIVE";
       }
