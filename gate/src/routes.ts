@@ -72,33 +72,39 @@ export function registerRoutes(
         update: { lastPingedAt: now },
       });
 
-      // Try to create the pod registration (idempotent)
-      const existing = await tx.deploymentService.findUnique({
+      // Upsert the pod registration (idempotent, safe under concurrent requests)
+      const ns = namespace || "";
+      const existingBefore = await tx.deploymentService.findUnique({
         where: {
           deploymentId_serviceId_podName_namespace: {
             deploymentId: deployment_id,
             serviceId: service_id,
             podName: pod_name,
-            namespace: namespace || "",
+            namespace: ns,
           },
         },
       });
 
-      if (existing) {
-        return { created: false, service: existing };
-      }
-
-      const service = await tx.deploymentService.create({
-        data: {
+      const service = await tx.deploymentService.upsert({
+        where: {
+          deploymentId_serviceId_podName_namespace: {
+            deploymentId: deployment_id,
+            serviceId: service_id,
+            podName: pod_name,
+            namespace: ns,
+          },
+        },
+        create: {
           deploymentId: deployment_id,
           serviceId: service_id,
           podName: pod_name,
-          namespace: namespace || "",
+          namespace: ns,
           groupName: group,
         },
+        update: {},
       });
 
-      return { created: true, service };
+      return { created: !existingBefore, service };
     });
 
     const statusCode = result.created ? 201 : 200;
