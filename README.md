@@ -123,7 +123,7 @@ All identity is derived from Qovery's own pod labels — no user-managed identif
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/register` | POST | Register a service (called by webhook) |
+| `/register` | POST | Register a pod (called by sidecar on startup) |
 | `/ready` | POST | Report readiness + check gate (called by sidecar) |
 | `/status` | GET | Deployment status (JSON) |
 | `/healthz` | GET | Liveness probe |
