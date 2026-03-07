@@ -181,6 +181,16 @@ This is a **pod-level** setting — all containers in the pod (including your ap
 
 If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
 
+## Edge Cases
+
+### Redeployment with unchanged images
+
+When you redeploy an environment via Qovery without code changes, Kubernetes does not create new pods — the Deployment spec is identical, so no rollout occurs. No new pods means no sidecars are injected and the gate is never involved. This is the correct behavior: there is no version skew risk when nothing changed.
+
+### Multi-replica services
+
+If a service has multiple replicas (e.g., 3 pods), each pod registers individually. The gate waits for **all pods** in the group to be ready — not just one per service. This ensures the entire replica set is healthy before traffic switches.
+
 ## Development
 
 ```bash
