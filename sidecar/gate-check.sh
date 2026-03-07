@@ -180,18 +180,16 @@ while true; do
     continue
   fi
 
-  # If gate reports error (e.g. unknown deployment), try fallback registration
+  # If gate reports error (e.g. unknown deployment or unregistered pod), try fallback registration
   if [ "$GATE_STATUS" = "error" ]; then
-    REASON=$(echo "$GATE_RESPONSE" | jq -r '.reason // ""' 2>/dev/null)
-    case "$REASON" in
-      *"Unknown deployment"*|*"not registered"*)
-        log "Service not registered, attempting fallback registration..."
-        register_with_gate
-        sleep "$GATE_POLL_INTERVAL" &
-        wait $!
-        continue
-        ;;
-    esac
+    ERROR_CODE=$(echo "$GATE_RESPONSE" | jq -r '.error_code // ""' 2>/dev/null)
+    if [ "$ERROR_CODE" = "not_found" ]; then
+      log "Service not registered, attempting fallback registration..."
+      register_with_gate
+      sleep "$GATE_POLL_INTERVAL" &
+      wait $!
+      continue
+    fi
   fi
 
   case "$GATE_STATUS" in
@@ -205,10 +203,14 @@ while true; do
       fi
       ;;
     waiting)
-      PENDING=$(echo "$GATE_RESPONSE" | jq -r '.pending_services // [] | join(", ")' 2>/dev/null)
+      PENDING=$(echo "$GATE_RESPONSE" | jq -r '.pending_pods // [] | join(", ")' 2>/dev/null)
+      MISSING=$(echo "$GATE_RESPONSE" | jq -r '.missing_services // [] | join(", ")' 2>/dev/null)
       READY_COUNT=$(echo "$GATE_RESPONSE" | jq -r '.group_services_ready // "?"' 2>/dev/null)
       TOTAL_COUNT=$(echo "$GATE_RESPONSE" | jq -r '.group_services_total // "?"' 2>/dev/null)
-      log "Gate is WAITING (${READY_COUNT}/${TOTAL_COUNT} ready). Pending: ${PENDING:-none}"
+      MSG="Gate is WAITING (${READY_COUNT}/${TOTAL_COUNT} ready)."
+      [ -n "$PENDING" ] && MSG="$MSG Pending pods: ${PENDING}"
+      [ -n "$MISSING" ] && MSG="$MSG Missing services: ${MISSING}"
+      log "$MSG"
       ;;
     error)
       REASON=$(echo "$GATE_RESPONSE" | jq -r '.reason // "Unknown error"' 2>/dev/null)

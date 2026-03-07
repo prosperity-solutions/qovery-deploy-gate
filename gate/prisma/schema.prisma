@@ -15,7 +15,8 @@ model Deployment {
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  services DeploymentService[]
+  services         DeploymentService[]
+  expectedServices ExpectedService[]
 
   @@index([createdAt])
   @@map("deployments")
@@ -31,9 +32,25 @@ model DeploymentService {
   registeredAt DateTime  @default(now()) @map("registered_at")
   readyAt      DateTime? @map("ready_at")
 
-  deployment Deployment @relation(fields: [deploymentId], references: [deploymentId])
+  deployment Deployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
 
   @@unique([deploymentId, serviceId, podName, namespace])
   @@index([deploymentId])
+  @@index([deploymentId, groupName])
   @@map("deployment_services")
+}
+
+model ExpectedService {
+  id           Int      @id @default(autoincrement())
+  deploymentId String   @map("deployment_id")
+  serviceId    String   @map("service_id")
+  groupName    String   @map("group_name")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  deployment Deployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
+
+  @@unique([deploymentId, serviceId])
+  @@index([deploymentId])
+  @@index([deploymentId, groupName])
+  @@map("expected_services")
 }

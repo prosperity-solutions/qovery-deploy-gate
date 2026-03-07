@@ -177,6 +177,43 @@ function buildJsonPatch(
   return patches;
 }
 
+function fireAndForgetExpect(
+  gateUrl: string,
+  deploymentId: string,
+  serviceId: string,
+  group: string,
+  log: { warn: (msg: string) => void }
+): void {
+  const body = JSON.stringify({
+    deployment_id: deploymentId,
+    service_id: serviceId,
+    group,
+  });
+
+  const attempt = (n: number): Promise<void> =>
+    fetch(`${gateUrl}/expect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(5000),
+    }).then(async (res) => {
+      await res.body?.cancel();
+      if (!res.ok) {
+        if (n < 3) {
+          return new Promise<void>((r) => setTimeout(r, 500 * n)).then(() => attempt(n + 1));
+        }
+        log.warn(`Failed to pre-register expected service ${serviceId} after 3 attempts: HTTP ${res.status}`);
+      }
+    }).catch((err) => {
+      if (n < 3) {
+        return new Promise<void>((r) => setTimeout(r, 500 * n)).then(() => attempt(n + 1));
+      }
+      log.warn(`Failed to pre-register expected service ${serviceId} after 3 attempts: ${err.message}`);
+    });
+
+  attempt(1).catch(() => {});
+}
+
 // ---- Route registration ----
 
 export function registerWebhook(
@@ -237,9 +274,13 @@ export function registerWebhook(
     const patches = buildJsonPatch(pod, sidecar);
     const patchBase64 = Buffer.from(JSON.stringify(patches)).toString("base64");
 
-    // Registration is handled by the sidecar on startup (it knows the actual pod name).
-    // The webhook only injects the sidecar — it does not register with the gate, because
-    // at admission time the pod name is not yet assigned (only generateName is available).
+    // Pre-register the expected service with the gate (fire-and-forget).
+    // This tells the gate "this service ID must appear before the group can open."
+    // At admission time the actual pod name isn't available (only generateName),
+    // so we only declare the service — the sidecar registers pods with real names later.
+    if (!req.dryRun) {
+      fireAndForgetExpect(config.gateUrl, deploymentId, serviceId, group, request.log);
+    }
 
     return {
       apiVersion: "admission.k8s.io/v1",
