@@ -1,6 +1,12 @@
 import { FastifyInstance } from "fastify";
 import { PrismaClient } from "./generated/prisma/client.js";
 
+interface ExpectBody {
+  deployment_id: string;
+  service_id: string;
+  group: string;
+}
+
 interface RegisterBody {
   deployment_id: string;
   service_id: string;
@@ -41,7 +47,70 @@ export function registerRoutes(
     }
   });
 
-  // Register a pod for a deployment
+  // Pre-register an expected service (called by webhook at admission time)
+  app.post<{ Body: ExpectBody }>("/expect", {
+    schema: {
+      body: {
+        type: "object",
+        required: ["deployment_id", "service_id", "group"],
+        additionalProperties: false,
+        properties: {
+          deployment_id: { type: "string", minLength: 1, maxLength: 255 },
+          service_id: { type: "string", minLength: 1, maxLength: 255 },
+          group: { type: "string", minLength: 1, maxLength: 255 },
+        },
+      },
+    },
+  }, async (request, reply) => {
+    const { deployment_id, service_id, group } = request.body;
+
+    const result = await prisma.$transaction(async (tx) => {
+      const now = new Date();
+      await tx.deployment.upsert({
+        where: { deploymentId: deployment_id },
+        create: {
+          deploymentId: deployment_id,
+          firstRegisteredAt: now,
+          lastRegisteredAt: now,
+          lastPingedAt: now,
+        },
+        update: {},
+      });
+
+      const existing = await tx.expectedService.findUnique({
+        where: {
+          deploymentId_serviceId: {
+            deploymentId: deployment_id,
+            serviceId: service_id,
+          },
+        },
+      });
+
+      if (existing) {
+        return { created: false, expected: existing };
+      }
+
+      const expected = await tx.expectedService.create({
+        data: {
+          deploymentId: deployment_id,
+          serviceId: service_id,
+          groupName: group,
+        },
+      });
+
+      return { created: true, expected };
+    });
+
+    const statusCode = result.created ? 201 : 200;
+    return reply.status(statusCode).send({
+      deployment_id,
+      service_id,
+      group,
+      already_expected: !result.created,
+    });
+  });
+
+  // Register a pod for a deployment (called by sidecar on startup)
   app.post<{ Body: RegisterBody }>("/register", {
     schema: {
       body: {
@@ -67,6 +136,7 @@ export function registerRoutes(
         create: {
           deploymentId: deployment_id,
           firstRegisteredAt: now,
+          lastRegisteredAt: now,
           lastPingedAt: now,
         },
         update: {},
@@ -103,6 +173,14 @@ export function registerRoutes(
         },
         update: {},
       });
+
+      // Update lastRegisteredAt when a new pod registers (resets settle timer)
+      if (!existingBefore) {
+        await tx.deployment.update({
+          where: { deploymentId: deployment_id },
+          data: { lastRegisteredAt: now },
+        });
+      }
 
       return { created: !existingBefore, service };
     });
@@ -187,21 +265,36 @@ export function registerRoutes(
         },
       });
 
-      const pendingServices = groupServices.filter((s) => {
+      const pendingPods = groupServices.filter((s) => {
         if (s.id === service.id) return false;
         return s.readyAt === null;
       });
 
-      const allGroupReady = pendingServices.length === 0;
+      const allPodsReady = pendingPods.length === 0;
 
-      // Check settle time
-      const elapsedMs = Date.now() - deployment.firstRegisteredAt.getTime();
+      // Check if all expected services for this group have at least one registered pod
+      const expectedServices = await tx.expectedService.findMany({
+        where: {
+          deploymentId: deployment_id,
+          groupName: service.groupName,
+        },
+      });
+
+      const registeredServiceIds = new Set(groupServices.map((s) => s.serviceId));
+      const missingServices = expectedServices.filter(
+        (es) => !registeredServiceIds.has(es.serviceId)
+      );
+
+      const allExpectedPresent = missingServices.length === 0;
+
+      // Check settle time (from last pod registration, not first)
+      const elapsedMs = Date.now() - deployment.lastRegisteredAt.getTime();
       const settleTimeMs = minSettleTime * 1000;
       const settleTimeMet = elapsedMs >= settleTimeMs;
       const settleTimeRemainingMs = settleTimeMet ? 0 : settleTimeMs - elapsedMs;
       const settleTimeRemainingSeconds = Math.ceil(settleTimeRemainingMs / 1000);
 
-      if (allGroupReady && settleTimeMet) {
+      if (allPodsReady && allExpectedPresent && settleTimeMet) {
         return {
           gate_status: "open" as const,
           group: service.groupName,
@@ -214,10 +307,11 @@ export function registerRoutes(
         gate_status: "waiting" as const,
         group: service.groupName,
         group_services_total: groupServices.length,
-        group_services_ready: groupServices.length - pendingServices.length,
-        pending_services: pendingServices.map((s) => `${s.serviceId}/${s.podName}`),
-        settle_time_remaining_seconds: allGroupReady ? settleTimeRemainingSeconds : undefined,
-        all_group_services_ready: allGroupReady,
+        group_services_ready: groupServices.length - pendingPods.length,
+        pending_pods: pendingPods.map((s) => `${s.serviceId}/${s.podName}`),
+        missing_services: missingServices.map((es) => es.serviceId),
+        settle_time_remaining_seconds: (allPodsReady && allExpectedPresent) ? settleTimeRemainingSeconds : undefined,
+        all_group_services_ready: allPodsReady && allExpectedPresent,
       };
     });
 
@@ -243,7 +337,7 @@ export function registerRoutes(
 
     const deployments = await prisma.deployment.findMany({
       where: { createdAt: { gt: cutoff } },
-      include: { services: true },
+      include: { services: true, expectedServices: true },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
@@ -251,12 +345,18 @@ export function registerRoutes(
     const formatDeployment = (d: typeof deployments[number]) => {
       const groups: Record<
         string,
-        { total: number; ready: number; services: { service_id: string; pod_name: string; namespace: string; ready: boolean; ready_at: string | null }[] }
+        {
+          total: number;
+          ready: number;
+          expected: number;
+          missing_services: string[];
+          services: { service_id: string; pod_name: string; namespace: string; ready: boolean; ready_at: string | null }[];
+        }
       > = {};
 
       for (const svc of d.services) {
         if (!groups[svc.groupName]) {
-          groups[svc.groupName] = { total: 0, ready: 0, services: [] };
+          groups[svc.groupName] = { total: 0, ready: 0, expected: 0, missing_services: [], services: [] };
         }
         groups[svc.groupName].total++;
         if (svc.readyAt) groups[svc.groupName].ready++;
@@ -269,10 +369,27 @@ export function registerRoutes(
         });
       }
 
+      // Add expected service info per group
+      for (const es of d.expectedServices) {
+        if (!groups[es.groupName]) {
+          groups[es.groupName] = { total: 0, ready: 0, expected: 0, missing_services: [], services: [] };
+        }
+        groups[es.groupName].expected++;
+        const registeredServiceIds = new Set(
+          groups[es.groupName].services.map((s) => s.service_id)
+        );
+        if (!registeredServiceIds.has(es.serviceId)) {
+          groups[es.groupName].missing_services.push(es.serviceId);
+        }
+      }
+
       // Derive status entirely from data
       const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
+      const registeredServiceIds = new Set(d.services.map((s) => s.serviceId));
+      const allExpectedPresent = d.expectedServices.every((es) => registeredServiceIds.has(es.serviceId));
+
       let derivedStatus: "COMPLETED" | "EXPIRED" | "ACTIVE";
-      if (allReady) {
+      if (allReady && allExpectedPresent) {
         derivedStatus = "COMPLETED";
       } else if (isStale(d.lastPingedAt, staleTimeout)) {
         derivedStatus = "EXPIRED";

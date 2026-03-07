@@ -205,10 +205,14 @@ while true; do
       fi
       ;;
     waiting)
-      PENDING=$(echo "$GATE_RESPONSE" | jq -r '.pending_services // [] | join(", ")' 2>/dev/null)
+      PENDING=$(echo "$GATE_RESPONSE" | jq -r '.pending_pods // [] | join(", ")' 2>/dev/null)
+      MISSING=$(echo "$GATE_RESPONSE" | jq -r '.missing_services // [] | join(", ")' 2>/dev/null)
       READY_COUNT=$(echo "$GATE_RESPONSE" | jq -r '.group_services_ready // "?"' 2>/dev/null)
       TOTAL_COUNT=$(echo "$GATE_RESPONSE" | jq -r '.group_services_total // "?"' 2>/dev/null)
-      log "Gate is WAITING (${READY_COUNT}/${TOTAL_COUNT} ready). Pending: ${PENDING:-none}"
+      MSG="Gate is WAITING (${READY_COUNT}/${TOTAL_COUNT} ready)."
+      [ -n "$PENDING" ] && MSG="$MSG Pending pods: ${PENDING}"
+      [ -n "$MISSING" ] && MSG="$MSG Missing services: ${MISSING}"
+      log "$MSG"
       ;;
     error)
       REASON=$(echo "$GATE_RESPONSE" | jq -r '.reason // "Unknown error"' 2>/dev/null)

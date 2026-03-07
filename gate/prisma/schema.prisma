@@ -11,11 +11,13 @@ model Deployment {
   id                Int      @id @default(autoincrement())
   deploymentId      String   @unique @map("deployment_id")
   firstRegisteredAt DateTime @map("first_registered_at")
+  lastRegisteredAt  DateTime @map("last_registered_at")
   lastPingedAt      DateTime @map("last_pinged_at")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  services DeploymentService[]
+  services         DeploymentService[]
+  expectedServices ExpectedService[]
 
   @@index([createdAt])
   @@map("deployments")
@@ -36,4 +38,18 @@ model DeploymentService {
   @@unique([deploymentId, serviceId, podName, namespace])
   @@index([deploymentId])
   @@map("deployment_services")
+}
+
+model ExpectedService {
+  id           Int      @id @default(autoincrement())
+  deploymentId String   @map("deployment_id")
+  serviceId    String   @map("service_id")
+  groupName    String   @map("group_name")
+  createdAt    DateTime @default(now()) @map("created_at")
+
+  deployment Deployment @relation(fields: [deploymentId], references: [deploymentId])
+
+  @@unique([deploymentId, serviceId])
+  @@index([deploymentId])
+  @@map("expected_services")
 }

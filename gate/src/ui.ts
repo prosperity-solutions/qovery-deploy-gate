@@ -317,13 +317,20 @@ export function registerUI(app: FastifyInstance) {
           servicesHtml += '<span class="service-tag ' + cls + '" title="' + esc(svc.service_id) + '">' + icon + ' ' + label + '</span>';
         }
 
+        let missingHtml = '';
+        if (g.missing_services && g.missing_services.length > 0) {
+          for (const svcId of g.missing_services) {
+            missingHtml += '<span class="service-tag service-pending" title="Expected but no pod registered yet">&#9888; ' + esc(svcId) + '</span>';
+          }
+        }
+
         groupsHtml += '<div class="group">' +
           '<div class="group-header">' +
             '<span class="group-name">' + esc(name) + '</span>' +
-            '<span class="group-progress">' + g.ready + ' / ' + g.total + ' ready</span>' +
+            '<span class="group-progress">' + g.ready + ' / ' + g.total + ' ready' + (g.missing_services && g.missing_services.length > 0 ? ' (' + g.missing_services.length + ' awaiting)' : '') + '</span>' +
           '</div>' +
           '<div class="progress-bar"><div class="progress-bar-fill ' + fillClass + '" style="width: ' + pct + '%"></div></div>' +
-          '<div class="services-list">' + servicesHtml + '</div>' +
+          '<div class="services-list">' + servicesHtml + missingHtml + '</div>' +
         '</div>';
       }
 

@@ -28,6 +28,7 @@ describeWithDb("API Routes (integration)", () => {
 
   beforeEach(async () => {
     // Clean up test data
+    await prisma.expectedService.deleteMany();
     await prisma.deploymentService.deleteMany();
     await prisma.deployment.deleteMany();
   });
@@ -37,6 +38,53 @@ describeWithDb("API Routes (integration)", () => {
     expect(res.statusCode).toBe(200);
     expect(res.json()).toEqual({ status: "ok" });
   });
+
+  // --- /expect tests ---
+
+  it("POST /expect creates expected service record", async () => {
+    const res = await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-e1", service_id: "svc-a", group: "web" },
+    });
+
+    expect(res.statusCode).toBe(201);
+    const body = res.json();
+    expect(body.deployment_id).toBe("dep-e1");
+    expect(body.service_id).toBe("svc-a");
+    expect(body.already_expected).toBe(false);
+
+    const expected = await prisma.expectedService.findMany({ where: { deploymentId: "dep-e1" } });
+    expect(expected).toHaveLength(1);
+    expect(expected[0].serviceId).toBe("svc-a");
+  });
+
+  it("POST /expect is idempotent", async () => {
+    const payload = { deployment_id: "dep-e2", service_id: "svc-a", group: "web" };
+
+    const res1 = await app.inject({ method: "POST", url: "/expect", payload });
+    expect(res1.statusCode).toBe(201);
+
+    const res2 = await app.inject({ method: "POST", url: "/expect", payload });
+    expect(res2.statusCode).toBe(200);
+    expect(res2.json().already_expected).toBe(true);
+
+    const expected = await prisma.expectedService.findMany({ where: { deploymentId: "dep-e2" } });
+    expect(expected).toHaveLength(1);
+  });
+
+  it("POST /expect creates deployment record", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-e3", service_id: "svc-a", group: "web" },
+    });
+
+    const deployment = await prisma.deployment.findUnique({ where: { deploymentId: "dep-e3" } });
+    expect(deployment).not.toBeNull();
+  });
+
+  // --- /register tests ---
 
   it("POST /register creates deployment and service", async () => {
     const res = await app.inject({
@@ -64,6 +112,7 @@ describeWithDb("API Routes (integration)", () => {
     });
     expect(deployment).not.toBeNull();
     expect(deployment!.lastPingedAt).toBeDefined();
+    expect(deployment!.lastRegisteredAt).toBeDefined();
   });
 
   it("POST /register is idempotent", async () => {
@@ -114,6 +163,53 @@ describeWithDb("API Routes (integration)", () => {
     });
     expect(services).toHaveLength(2);
   });
+
+  it("POST /register updates lastRegisteredAt on new pod", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-lr", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const dep1 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr" } });
+    const lastReg1 = dep1!.lastRegisteredAt.getTime();
+
+    // Small delay to ensure timestamp differs
+    await new Promise((r) => setTimeout(r, 10));
+
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-lr", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+
+    const dep2 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr" } });
+    expect(dep2!.lastRegisteredAt.getTime()).toBeGreaterThan(lastReg1);
+  });
+
+  it("POST /register does not update lastRegisteredAt on idempotent call", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-lr2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const dep1 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr2" } });
+    const lastReg1 = dep1!.lastRegisteredAt.getTime();
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-lr2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const dep2 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr2" } });
+    expect(dep2!.lastRegisteredAt.getTime()).toBe(lastReg1);
+  });
+
+  // --- /ready tests ---
 
   it("POST /ready returns error for unknown deployment", async () => {
     const res = await app.inject({
@@ -180,7 +276,7 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.gate_status).toBe("waiting");
     expect(body.group_services_total).toBe(2);
     expect(body.group_services_ready).toBe(1);
-    expect(body.pending_services).toContain("svc-b/svc-b-pod-1");
+    expect(body.pending_pods).toContain("svc-b/svc-b-pod-1");
   });
 
   it("POST /ready waits for all pods of the same service", async () => {
@@ -270,6 +366,101 @@ describeWithDb("API Routes (integration)", () => {
     expect(res.json().group_services_ready).toBe(1);
   });
 
+  // --- /ready + /expect interaction tests ---
+
+  it("POST /ready waits for expected services that haven't registered pods yet", async () => {
+    // Webhook pre-registers two expected services
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-exp1", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-exp1", service_id: "svc-b", group: "web" },
+    });
+
+    // Only svc-a's sidecar has registered and is ready
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-exp1", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-exp1", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gate_status).toBe("waiting");
+    expect(body.missing_services).toContain("svc-b");
+  });
+
+  it("POST /ready opens when all expected services have registered pods", async () => {
+    // Webhook pre-registers
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-b", group: "web" },
+    });
+
+    // Both sidecars register
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "web" },
+    });
+
+    // Both report ready
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-exp2", service_id: "svc-b", pod_name: "svc-b-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().gate_status).toBe("open");
+  });
+
+  it("POST /ready opens without /expect if no expected services exist (backwards compatible)", async () => {
+    // No /expect calls — only sidecar registration (no webhook pre-registration)
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-noexp", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-noexp", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.json().gate_status).toBe("open");
+  });
+
+  // --- /status tests ---
+
   it("GET /status returns deployment data with pod info", async () => {
     await app.inject({
       method: "POST",
@@ -317,6 +508,37 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.recent_completed).toHaveLength(1);
     expect(body.recent_completed[0].deployment_id).toBe("dep-9");
     expect(body.recent_completed[0].status).toBe("COMPLETED");
+  });
+
+  it("GET /status shows ACTIVE when expected services are missing pods", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-s1", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-s1", service_id: "svc-b", group: "web" },
+    });
+    // Only svc-a has a registered and ready pod
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-s1", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-s1", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    expect(body.active).toHaveLength(1);
+    expect(body.active[0].groups.web.missing_services).toContain("svc-b");
+    expect(body.recent_completed).toHaveLength(0);
   });
 
   it("POST /ready expires stale deployment and returns open", async () => {
@@ -390,6 +612,7 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.recent_completed[0].status).toBe("COMPLETED");
     expect(body.recent_expired).toHaveLength(0);
   });
+
   it("POST /ready returns waiting when settle time has not elapsed", async () => {
     // Create a separate app with 9999s settle time
     const settleApp = Fastify();

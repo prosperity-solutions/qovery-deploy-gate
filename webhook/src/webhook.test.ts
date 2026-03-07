@@ -1,13 +1,17 @@
-import { describe, it, expect, beforeAll, afterAll } from "vitest";
+import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerWebhook } from "./webhook.js";
+
+// Mock global fetch to capture /expect calls
+const fetchCalls: { url: string; body: string }[] = [];
+const originalFetch = globalThis.fetch;
 
 function buildApp(): FastifyInstance {
   // Plain HTTP Fastify instance for testing (no TLS)
   const app = Fastify({ logger: false });
 
   registerWebhook(app, {
-    gateUrl: "http://localhost:9999",
+    gateUrl: "http://gate:8080",
     sidecarImage: "ghcr.io/test/sidecar:latest",
     pollInterval: "5",
   });
@@ -51,15 +55,24 @@ describe("Mutating Admission Webhook", () => {
   let app: FastifyInstance;
 
   beforeAll(async () => {
+    // Mock fetch to capture /expect calls
+    globalThis.fetch = vi.fn(async (url: string | URL | Request, init?: RequestInit) => {
+      const urlStr = typeof url === "string" ? url : url instanceof URL ? url.toString() : url.url;
+      fetchCalls.push({ url: urlStr, body: init?.body as string });
+      return new Response(JSON.stringify({ ok: true }), { status: 201 });
+    }) as typeof fetch;
+
     app = buildApp();
     await app.ready();
   });
 
   afterAll(async () => {
     await app.close();
+    globalThis.fetch = originalFetch;
   });
 
   it("should inject sidecar for pods with qovery-deploy-gate.life.li/group label", async () => {
+    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-123",
@@ -99,7 +112,7 @@ describe("Mutating Admission Webhook", () => {
     const envMap = new Map(
       containerPatch.value.env.map((e: { name: string; value?: string }) => [e.name, e.value])
     );
-    expect(envMap.get("GATE_URL")).toBe("http://localhost:9999");
+    expect(envMap.get("GATE_URL")).toBe("http://gate:8080");
     expect(envMap.get("GATE_DEPLOYMENT_ID")).toBe("dep-123");
     expect(envMap.get("GATE_SERVICE_ID")).toBe("svc-456");
     expect(envMap.get("GATE_GROUP")).toBe("my-group");
@@ -126,6 +139,7 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should pass through pods without qovery-deploy-gate.life.li/group label", async () => {
+    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       app: "my-app",
     });
@@ -142,9 +156,13 @@ describe("Mutating Admission Webhook", () => {
     expect(review.response.allowed).toBe(true);
     expect(review.response.patch).toBeUndefined();
     expect(review.response.patchType).toBeUndefined();
+
+    // No /expect call should be made
+    expect(fetchCalls).toHaveLength(0);
   });
 
   it("should skip injection when required Qovery labels are missing", async () => {
+    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       // No qovery.com/deployment-id or qovery.com/service-id
@@ -162,6 +180,9 @@ describe("Mutating Admission Webhook", () => {
     // No patch should be applied when required labels are missing
     expect(review.response.patch).toBeUndefined();
     expect(review.response.patchType).toBeUndefined();
+
+    // No /expect call either
+    expect(fetchCalls).toHaveLength(0);
   });
 
   it("should return correct JSON patch format", async () => {
@@ -224,13 +245,38 @@ describe("Mutating Admission Webhook", () => {
     expect(gatePatch.value).toEqual({ conditionType: "qovery-deploy-gate.life.li/synced" });
   });
 
-  it("should still inject sidecar on dry-run but skip registration", async () => {
+  it("should fire-and-forget POST /expect to gate for gated pods", async () => {
+    fetchCalls.length = 0;
+    const body = makeAdmissionReview({
+      "qovery-deploy-gate.life.li/group": "my-group",
+      "qovery.com/deployment-id": "dep-expect",
+      "qovery.com/service-id": "svc-expect",
+    });
+
+    await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    // Give fire-and-forget microtask time to execute
+    await new Promise((r) => setTimeout(r, 10));
+
+    expect(fetchCalls).toHaveLength(1);
+    expect(fetchCalls[0].url).toBe("http://gate:8080/expect");
+    const parsed = JSON.parse(fetchCalls[0].body);
+    expect(parsed.deployment_id).toBe("dep-expect");
+    expect(parsed.service_id).toBe("svc-expect");
+    expect(parsed.group).toBe("my-group");
+  });
+
+  it("should not call /expect on dry-run", async () => {
+    fetchCalls.length = 0;
     const review = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-dry",
       "qovery.com/service-id": "svc-dry",
     });
-    // Add dryRun flag
     (review.request as Record<string, unknown>).dryRun = true;
 
     const res = await app.inject({
@@ -239,12 +285,17 @@ describe("Mutating Admission Webhook", () => {
       payload: review,
     });
 
+    await new Promise((r) => setTimeout(r, 10));
+
     expect(res.statusCode).toBe(200);
     const result = JSON.parse(res.payload);
     expect(result.response.allowed).toBe(true);
     // Should still return a patch (sidecar injection) even on dry-run
     expect(result.response.patch).toBeDefined();
     expect(result.response.patchType).toBe("JSONPatch");
+
+    // But no /expect call
+    expect(fetchCalls).toHaveLength(0);
   });
 
   it("healthz should return 200", async () => {
