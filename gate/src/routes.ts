@@ -74,7 +74,9 @@ export function registerRoutes(
           lastRegisteredAt: now,
           lastPingedAt: now,
         },
-        update: {},
+        // Refresh lastPingedAt on subsequent /expect calls to prevent premature
+        // expiry when services are admitted over an extended period (node scaling)
+        update: { lastPingedAt: now },
       });
 
       const existing = await tx.expectedService.findUnique({
@@ -410,8 +412,8 @@ export function registerRoutes(
 
       // Derive status entirely from data
       const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
-      const registeredServiceIds = new Set(d.services.map((s) => s.serviceId));
-      const allExpectedPresent = d.expectedServices.every((es) => registeredServiceIds.has(es.serviceId));
+      // Check expected services per-group (consistent with /ready logic)
+      const allExpectedPresent = Object.values(groups).every((g) => g.missing_services.length === 0);
 
       let derivedStatus: "COMPLETED" | "EXPIRED" | "ACTIVE";
       if (allReady && allExpectedPresent) {
