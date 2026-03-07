@@ -185,12 +185,7 @@ If this is a concern for your security posture, a future improvement could injec
 
 ### Redeployment with unchanged images
 
-When you redeploy an environment via Qovery without code changes, Qovery reuses the same `deployment-id`. The gate handles this correctly:
-
-- **> 5 min since last deploy**: The deployment is stale, so the gate opens immediately. Pods start uncoordinated — which is safe because identical images mean no version skew can occur.
-- **< 5 min since last deploy**: New pods register with new pod names (Kubernetes always generates fresh names). The gate coordinates them normally, waiting for all new pods before opening.
-
-In both cases, old pod records remain in the database (already marked ready) and don't interfere with the new pods.
+When you redeploy an environment via Qovery without code changes, Kubernetes does not create new pods — the Deployment spec is identical, so no rollout occurs. No new pods means no sidecars are injected and the gate is never involved. This is the correct behavior: there is no version skew risk when nothing changed.
 
 ### Multi-replica services
 
