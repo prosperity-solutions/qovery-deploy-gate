@@ -196,7 +196,8 @@ function fireAndForgetExpect(
       headers: { "Content-Type": "application/json" },
       body,
       signal: AbortSignal.timeout(5000),
-    }).then((res) => {
+    }).then(async (res) => {
+      await res.body?.cancel();
       if (!res.ok) {
         if (n < 3) {
           return new Promise<void>((r) => setTimeout(r, 500 * n)).then(() => attempt(n + 1));

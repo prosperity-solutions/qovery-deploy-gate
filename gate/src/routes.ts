@@ -184,7 +184,8 @@ export function registerRoutes(
 
         // Belt-and-suspenders: also upsert the expected service record.
         // If the webhook's fire-and-forget /expect call failed, this ensures the
-        // gate still knows about this service.
+        // gate still knows about this service. On conflict, update groupName to
+        // match the sidecar's actual group (corrects any mismatch from /expect).
         await tx.expectedService.upsert({
           where: {
             deploymentId_serviceId: {
@@ -197,7 +198,7 @@ export function registerRoutes(
             serviceId: service_id,
             groupName: group,
           },
-          update: {},
+          update: { groupName: group },
         });
       }
 
