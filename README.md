@@ -181,6 +181,21 @@ This is a **pod-level** setting — all containers in the pod (including your ap
 
 If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
 
+## Edge Cases
+
+### Redeployment with unchanged images
+
+When you redeploy an environment via Qovery without code changes, Qovery reuses the same `deployment-id`. The gate handles this correctly:
+
+- **> 5 min since last deploy**: The deployment is stale, so the gate opens immediately. Pods start uncoordinated — which is safe because identical images mean no version skew can occur.
+- **< 5 min since last deploy**: New pods register with new pod names (Kubernetes always generates fresh names). The gate coordinates them normally, waiting for all new pods before opening.
+
+In both cases, old pod records remain in the database (already marked ready) and don't interfere with the new pods.
+
+### Multi-replica services
+
+If a service has multiple replicas (e.g., 3 pods), each pod registers individually. The gate waits for **all pods** in the group to be ready — not just one per service. This ensures the entire replica set is healthy before traffic switches.
+
 ## Development
 
 ```bash
