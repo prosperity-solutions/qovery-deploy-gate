@@ -123,6 +123,7 @@ All identity is derived from Qovery's own pod labels — no user-managed identif
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/expect` | POST | Declare an expected service (called by webhook at admission time) |
 | `/register` | POST | Register a pod (called by sidecar on startup) |
 | `/ready` | POST | Report readiness + check gate (called by sidecar) |
 | `/status` | GET | Deployment status (JSON) |
@@ -136,7 +137,7 @@ All identity is derived from Qovery's own pod labels — no user-managed identif
 ```yaml
 gate:
   replicas: 2
-  minSettleTime: 30        # seconds to wait after first registration
+  minSettleTime: 30        # seconds to wait after last pod registration
   staleTimeout: 300        # seconds since last /ready ping before expiring (default 5m)
   database:
     external: false        # use built-in Postgres

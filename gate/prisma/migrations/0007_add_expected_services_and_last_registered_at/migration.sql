@@ -16,5 +16,6 @@ CREATE TABLE "expected_services" (
 
 CREATE UNIQUE INDEX "expected_services_deployment_id_service_id_key" ON "expected_services"("deployment_id", "service_id");
 CREATE INDEX "expected_services_deployment_id_idx" ON "expected_services"("deployment_id");
+CREATE INDEX "expected_services_deployment_id_group_name_idx" ON "expected_services"("deployment_id", "group_name");
 
 ALTER TABLE "expected_services" ADD CONSTRAINT "expected_services_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "deployments"("deployment_id") ON DELETE RESTRICT ON UPDATE CASCADE;

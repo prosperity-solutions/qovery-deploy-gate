@@ -51,5 +51,6 @@ model ExpectedService {
 
   @@unique([deploymentId, serviceId])
   @@index([deploymentId])
+  @@index([deploymentId, groupName])
   @@map("expected_services")
 }
