@@ -92,12 +92,21 @@ export function registerRoutes(
         return { created: false, expected: existing };
       }
 
-      const expected = await tx.expectedService.create({
-        data: {
+      // Use upsert instead of create to handle concurrent /expect calls
+      // for the same service — the unique constraint would reject a plain create
+      const expected = await tx.expectedService.upsert({
+        where: {
+          deploymentId_serviceId: {
+            deploymentId: deployment_id,
+            serviceId: service_id,
+          },
+        },
+        create: {
           deploymentId: deployment_id,
           serviceId: service_id,
           groupName: group,
         },
+        update: {},
       });
 
       return { created: true, expected };

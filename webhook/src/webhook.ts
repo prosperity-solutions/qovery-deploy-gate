@@ -211,7 +211,7 @@ function fireAndForgetExpect(
       log.warn(`Failed to pre-register expected service ${serviceId} after 3 attempts: ${err.message}`);
     });
 
-  attempt(1);
+  attempt(1).catch(() => {});
 }
 
 // ---- Route registration ----

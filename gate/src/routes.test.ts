@@ -200,6 +200,28 @@ describeWithDb("API Routes (integration)", () => {
     expect(expected[0].groupName).toBe("web");
   });
 
+  it("POST /register corrects expected service group when mismatched with /expect", async () => {
+    // Webhook registers with group "wrong-group"
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-mismatch", service_id: "svc-a", group: "wrong-group" },
+    });
+
+    // Sidecar registers with correct group "web"
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-mismatch", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const expected = await prisma.expectedService.findUnique({
+      where: { deploymentId_serviceId: { deploymentId: "dep-mismatch", serviceId: "svc-a" } },
+    });
+    // Sidecar's group wins
+    expect(expected!.groupName).toBe("web");
+  });
+
   it("POST /register refreshes lastPingedAt on new registration", async () => {
     // Simulate /expect having been called a while ago
     await app.inject({
