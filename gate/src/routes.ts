@@ -71,7 +71,6 @@ export function registerRoutes(
         create: {
           deploymentId: deployment_id,
           firstRegisteredAt: now,
-          lastRegisteredAt: now,
           lastPingedAt: now,
         },
         // Refresh lastPingedAt on subsequent /expect calls to prevent premature
@@ -147,7 +146,6 @@ export function registerRoutes(
         create: {
           deploymentId: deployment_id,
           firstRegisteredAt: now,
-          lastRegisteredAt: now,
           lastPingedAt: now,
         },
         update: {},
@@ -186,11 +184,11 @@ export function registerRoutes(
       });
 
       if (!existingBefore) {
-        // Update lastRegisteredAt (resets settle timer) and lastPingedAt (prevents
-        // early expiry if /expect was called long before node provisioning completed)
+        // Refresh lastPingedAt to prevent early expiry if /expect was called
+        // long before node provisioning completed
         await tx.deployment.update({
           where: { deploymentId: deployment_id },
-          data: { lastRegisteredAt: now, lastPingedAt: now },
+          data: { lastPingedAt: now },
         });
 
         // Belt-and-suspenders: also upsert the expected service record.

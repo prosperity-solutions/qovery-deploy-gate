@@ -110,7 +110,6 @@ describeWithDb("API Routes (integration)", () => {
     });
     expect(deployment).not.toBeNull();
     expect(deployment!.lastPingedAt).toBeDefined();
-    expect(deployment!.lastRegisteredAt).toBeDefined();
   });
 
   it("POST /register is idempotent", async () => {
@@ -160,29 +159,6 @@ describeWithDb("API Routes (integration)", () => {
       where: { deploymentId: "dep-2b" },
     });
     expect(services).toHaveLength(2);
-  });
-
-  it("POST /register updates lastRegisteredAt on new pod", async () => {
-    await app.inject({
-      method: "POST",
-      url: "/register",
-      payload: { deployment_id: "dep-lr", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
-    });
-
-    const dep1 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr" } });
-    const lastReg1 = dep1!.lastRegisteredAt.getTime();
-
-    // Small delay to ensure timestamp differs
-    await new Promise((r) => setTimeout(r, 10));
-
-    await app.inject({
-      method: "POST",
-      url: "/register",
-      payload: { deployment_id: "dep-lr", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
-    });
-
-    const dep2 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr" } });
-    expect(dep2!.lastRegisteredAt.getTime()).toBeGreaterThan(lastReg1);
   });
 
   it("POST /register also creates expected service record (belt-and-suspenders)", async () => {
@@ -269,28 +245,6 @@ describeWithDb("API Routes (integration)", () => {
 
     const dep = await prisma.deployment.findUnique({ where: { deploymentId: "dep-idem-ping" } });
     expect(dep!.lastPingedAt.getTime()).toBeGreaterThan(oldTime.getTime());
-  });
-
-  it("POST /register does not update lastRegisteredAt on idempotent call", async () => {
-    await app.inject({
-      method: "POST",
-      url: "/register",
-      payload: { deployment_id: "dep-lr2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
-    });
-
-    const dep1 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr2" } });
-    const lastReg1 = dep1!.lastRegisteredAt.getTime();
-
-    await new Promise((r) => setTimeout(r, 10));
-
-    await app.inject({
-      method: "POST",
-      url: "/register",
-      payload: { deployment_id: "dep-lr2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
-    });
-
-    const dep2 = await prisma.deployment.findUnique({ where: { deploymentId: "dep-lr2" } });
-    expect(dep2!.lastRegisteredAt.getTime()).toBe(lastReg1);
   });
 
   // --- /ready tests ---

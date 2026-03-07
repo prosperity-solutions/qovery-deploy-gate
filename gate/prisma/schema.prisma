@@ -11,7 +11,6 @@ model Deployment {
   id                Int      @id @default(autoincrement())
   deploymentId      String   @unique @map("deployment_id")
   firstRegisteredAt DateTime @map("first_registered_at")
-  lastRegisteredAt  DateTime @map("last_registered_at")
   lastPingedAt      DateTime @map("last_pinged_at")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
