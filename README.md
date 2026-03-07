@@ -18,7 +18,7 @@ Since Qovery uses a blue-green rolling update strategy (`maxSurge=100%`, `maxUna
 3. Deploy normally via Qovery — the gate handles the rest
 ```
 
-A **mutating webhook** intercepts pod creation, checks for the `qovery-deploy-gate.life.li/group` label, and auto-injects a **sidecar** + readiness gate. The sidecar polls the **gate API**, which holds all services until every group member is ready and a settle time has passed. Then all pods become ready simultaneously.
+A **mutating webhook** intercepts pod creation, checks for the `qovery-deploy-gate.life.li/group` label, auto-injects a **sidecar** + readiness gate, and pre-registers the service with the **gate API** (`POST /expect`). This happens at Kubernetes admission time — before nodes are even provisioned — so the gate immediately knows which services to expect. When pods start, each **sidecar** registers its pod (`POST /register`) and polls for readiness (`POST /ready`). The gate holds all services until every expected group member has registered, all pods are ready, and a settle time has passed. Then all pods become ready simultaneously.
 
 No changes to application images, Dockerfiles, env vars, or readiness probes. Configuration is done entirely through the Qovery console via labels.
 
@@ -28,10 +28,11 @@ No changes to application images, Dockerfiles, env vars, or readiness probes. Co
 ┌──────────────────┐     ┌──────────────────┐     ┌──────────┐
 │  K8s API Server  │     │  Gate API + UI   │     │ Postgres │
 │                  │     │                  │     │          │
-│  Pod CREATE ─────┼────►│  POST /register  │◄────┤          │
-│  ↓               │     │  POST /ready     │────►│          │
-│  Webhook injects │     │  GET  /status    │     │          │
-│  sidecar         │     │  GET  /ui        │     │          │
+│  Pod CREATE ─────┼──┐  │  POST /expect    │◄────┤          │
+│  ↓               │  │  │  POST /register  │────►│          │
+│  Webhook injects │  └─►│  POST /ready     │     │          │
+│  sidecar +       │     │  GET  /status    │     │          │
+│  calls /expect   │     │  GET  /ui        │     │          │
 └──────────────────┘     └──────────────────┘     └──────────┘
         │
         ▼
@@ -41,8 +42,8 @@ No changes to application images, Dockerfiles, env vars, or readiness probes. Co
   │  │ App       │ │ Sidecar   │         │
   │  │ container │ │ (injected)│         │
   │  │           │ │           │         │
-  │  │ Readiness │ │ Watches   │         │
-  │  │ probe     │ │ → polls   │         │
+  │  │ Readiness │ │ /register │         │
+  │  │ probe     │ │ → /ready  │         │
   │  │           │ │ → patches │         │
   │  └───────────┘ └───────────┘         │
   │  readinessGates:                     │
@@ -69,7 +70,7 @@ Add qovery-deploy-gate as a Helm service in your Qovery environment:
 3. Configure the chart:
    - **Repository**: Add `ghcr.io/prosperity-solutions/qovery-deploy-gate` as a Helm repository in **Organization Settings > Helm Repositories** (type: OCI, public).
    - **Chart name**: `chart`
-   - **Version**: `1.0.0` (or `latest`)
+   - **Version**: Use the latest version from the [releases page](https://github.com/prosperity-solutions/qovery-deploy-gate/releases)
 4. No values override needed for defaults. Optionally customize via raw YAML or `--set` arguments (see [Configuration](#configuration)).
 5. Click **Create** and deploy.
 
@@ -98,12 +99,12 @@ Services with the same `qovery-deploy-gate.life.li/group` label value form a syn
 
 ```
 Full deploy:    Qovery deploys [API, Worker, Frontend]
-                webhook sees [API, Worker] in group "backend"
-                → waits for both before opening
+                webhook pre-registers [API, Worker] as expected in group "backend"
+                sidecars register pods → gate waits for both before opening
 
 Partial deploy: Qovery deploys only [API]
-                webhook sees [API] in group "backend"
-                → opens when API is ready
+                webhook pre-registers [API] as expected in group "backend"
+                → gate opens when API pod is ready
                 Worker not deploying → old pods keep serving
 ```
 
@@ -128,6 +129,7 @@ All identity is derived from Qovery's own pod labels — no user-managed identif
 | `/ready` | POST | Report readiness + check gate (called by sidecar) |
 | `/status` | GET | Deployment status (JSON) |
 | `/healthz` | GET | Liveness probe |
+| `/readyz` | GET | Readiness probe (verifies DB connectivity) |
 | `/ui` | GET | Web dashboard |
 
 ## Configuration
