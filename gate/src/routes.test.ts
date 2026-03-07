@@ -27,9 +27,7 @@ describeWithDb("API Routes (integration)", () => {
   });
 
   beforeEach(async () => {
-    // Clean up test data
-    await prisma.expectedService.deleteMany();
-    await prisma.deploymentService.deleteMany();
+    // CASCADE deletes clean up related services and expected services
     await prisma.deployment.deleteMany();
   });
 
@@ -809,6 +807,102 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.gate_status).toBe("waiting");
     expect(body.all_group_services_ready).toBe(true);
     expect(body.settle_time_remaining_seconds).toBeGreaterThan(0);
+
+    await settleApp.close();
+  });
+
+  it("POST /ready returns waiting when expected services present and ready but settle time not elapsed", async () => {
+    const settleApp = Fastify();
+    registerRoutes(settleApp, prisma, 9999, 300);
+    await settleApp.ready();
+
+    // Webhook pre-registers expected services
+    await settleApp.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-14", service_id: "svc-a", group: "web" },
+    });
+    await settleApp.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-14", service_id: "svc-b", group: "web" },
+    });
+
+    // Both sidecars register and report ready
+    await settleApp.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-14", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await settleApp.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-14", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "web" },
+    });
+    await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-14", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    const res = await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-14", service_id: "svc-b", pod_name: "svc-b-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gate_status).toBe("waiting");
+    expect(body.all_group_services_ready).toBe(true);
+    expect(body.missing_services).toEqual([]);
+    expect(body.settle_time_remaining_seconds).toBeGreaterThan(0);
+
+    await settleApp.close();
+  });
+
+  it("POST /ready settle time is per-group — late registration in another group does not reset", async () => {
+    const settleApp = Fastify();
+    registerRoutes(settleApp, prisma, 2, 300); // 2s settle time
+    await settleApp.ready();
+
+    // Group A registers first
+    await settleApp.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-15", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "group-a" },
+    });
+
+    // Wait for settle time to pass for group A
+    await new Promise((r) => setTimeout(r, 2100));
+
+    // Group B registers late — should NOT reset group A's settle time
+    await settleApp.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-15", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "group-b" },
+    });
+
+    // Group A should be open (settle time already passed for its pods)
+    await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-15", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    const resA = await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-15", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    expect(resA.json().gate_status).toBe("open");
+
+    // Group B should still be waiting (just registered, settle time not passed)
+    const resB = await settleApp.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-15", service_id: "svc-b", pod_name: "svc-b-pod-1" },
+    });
+    expect(resB.json().gate_status).toBe("waiting");
+    expect(resB.json().settle_time_remaining_seconds).toBeGreaterThan(0);
 
     await settleApp.close();
   });

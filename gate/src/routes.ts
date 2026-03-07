@@ -327,8 +327,13 @@ export function registerRoutes(
 
       const allExpectedPresent = missingServices.length === 0;
 
-      // Check settle time (from last pod registration, not first)
-      const elapsedMs = Date.now() - deployment.lastRegisteredAt.getTime();
+      // Check settle time per-group (from last pod registration in THIS group,
+      // not deployment-global, so a late registration in group-B doesn't reset group-A)
+      const groupLastRegisteredAt = groupServices.reduce(
+        (max, s) => (s.registeredAt > max ? s.registeredAt : max),
+        groupServices[0].registeredAt
+      );
+      const elapsedMs = Date.now() - groupLastRegisteredAt.getTime();
       const settleTimeMs = minSettleTime * 1000;
       const settleTimeMet = elapsedMs >= settleTimeMs;
       const settleTimeRemainingMs = settleTimeMet ? 0 : settleTimeMs - elapsedMs;
