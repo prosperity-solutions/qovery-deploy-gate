@@ -310,6 +310,7 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(404);
     expect(res.json().gate_status).toBe("error");
+    expect(res.json().error_code).toBe("not_found");
     expect(res.json().reason).toContain("nonexistent");
   });
 
@@ -337,6 +338,7 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(404);
     expect(res.json().gate_status).toBe("error");
+    expect(res.json().error_code).toBe("not_found");
   });
 
   it("POST /ready returns waiting when group is incomplete", async () => {

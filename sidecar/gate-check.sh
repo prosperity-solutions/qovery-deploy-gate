@@ -180,18 +180,16 @@ while true; do
     continue
   fi
 
-  # If gate reports error (e.g. unknown deployment), try fallback registration
+  # If gate reports error (e.g. unknown deployment or unregistered pod), try fallback registration
   if [ "$GATE_STATUS" = "error" ]; then
-    REASON=$(echo "$GATE_RESPONSE" | jq -r '.reason // ""' 2>/dev/null)
-    case "$REASON" in
-      *"Unknown deployment"*|*"not registered"*)
-        log "Service not registered, attempting fallback registration..."
-        register_with_gate
-        sleep "$GATE_POLL_INTERVAL" &
-        wait $!
-        continue
-        ;;
-    esac
+    ERROR_CODE=$(echo "$GATE_RESPONSE" | jq -r '.error_code // ""' 2>/dev/null)
+    if [ "$ERROR_CODE" = "not_found" ]; then
+      log "Service not registered, attempting fallback registration..."
+      register_with_gate
+      sleep "$GATE_POLL_INTERVAL" &
+      wait $!
+      continue
+    fi
   fi
 
   case "$GATE_STATUS" in

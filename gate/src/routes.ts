@@ -182,7 +182,7 @@ export function registerRoutes(
           namespace: ns,
           groupName: group,
         },
-        update: {},
+        update: { groupName: group },
       });
 
       if (!existingBefore) {
@@ -359,6 +359,7 @@ export function registerRoutes(
     if (result.gate_status === "not_found") {
       return reply.status(404).send({
         gate_status: "error",
+        error_code: "not_found",
         reason: result.reason,
       });
     }
