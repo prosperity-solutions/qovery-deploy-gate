@@ -204,6 +204,15 @@ export function registerRoutes(
         });
       }
 
+      // Even on idempotent calls, refresh lastPingedAt to prevent expiry
+      // during sidecar retry loops where the pod re-registers repeatedly
+      if (existingBefore) {
+        await tx.deployment.update({
+          where: { deploymentId: deployment_id },
+          data: { lastPingedAt: now },
+        });
+      }
+
       return { created: !existingBefore, service };
     });
 

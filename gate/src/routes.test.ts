@@ -226,6 +226,31 @@ describeWithDb("API Routes (integration)", () => {
     expect(dep!.lastPingedAt.getTime()).toBeGreaterThan(oldTime.getTime());
   });
 
+  it("POST /register refreshes lastPingedAt on idempotent call", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-idem-ping", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    // Simulate time passing
+    const oldTime = new Date(Date.now() - 200_000);
+    await prisma.deployment.update({
+      where: { deploymentId: "dep-idem-ping" },
+      data: { lastPingedAt: oldTime },
+    });
+
+    // Idempotent re-register should still refresh lastPingedAt
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-idem-ping", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const dep = await prisma.deployment.findUnique({ where: { deploymentId: "dep-idem-ping" } });
+    expect(dep!.lastPingedAt.getTime()).toBeGreaterThan(oldTime.getTime());
+  });
+
   it("POST /register does not update lastRegisteredAt on idempotent call", async () => {
     await app.inject({
       method: "POST",
@@ -480,6 +505,89 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().gate_status).toBe("open");
+  });
+
+  it("POST /ready isolates groups — group A opening does not affect group B", async () => {
+    // Group A: svc-a
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-iso", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "group-a" },
+    });
+    // Group B: svc-b (not ready yet)
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-iso", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "group-b" },
+    });
+
+    // svc-a reports ready — group A should open (only one member)
+    const resA = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-iso", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    expect(resA.json().gate_status).toBe("open");
+    expect(resA.json().group).toBe("group-a");
+
+    // svc-b not yet ready — group B should still be waiting
+    const resB = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-iso", service_id: "svc-b", pod_name: "svc-b-pod-1" },
+    });
+    // svc-b just reported ready and it's the only member of group-b, so it opens too
+    expect(resB.json().gate_status).toBe("open");
+    expect(resB.json().group).toBe("group-b");
+  });
+
+  it("POST /ready cross-group isolation — pending in one group doesn't block another", async () => {
+    // Group A: svc-a and svc-b
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-a", group: "group-a" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-b", group: "group-a" },
+    });
+    // Group B: svc-c
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-c", group: "group-b" },
+    });
+
+    // Only svc-a and svc-c register
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "group-a" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-c", pod_name: "svc-c-pod-1", group: "group-b" },
+    });
+
+    // Group A should be waiting (svc-b missing)
+    const resA = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    expect(resA.json().gate_status).toBe("waiting");
+    expect(resA.json().missing_services).toContain("svc-b");
+
+    // Group B should be open (svc-c is the only expected member)
+    const resB = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-iso2", service_id: "svc-c", pod_name: "svc-c-pod-1" },
+    });
+    expect(resB.json().gate_status).toBe("open");
   });
 
   it("POST /ready opens without /expect if no expected services exist (backwards compatible)", async () => {

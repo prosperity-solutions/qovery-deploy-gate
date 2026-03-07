@@ -37,6 +37,7 @@ model DeploymentService {
 
   @@unique([deploymentId, serviceId, podName, namespace])
   @@index([deploymentId])
+  @@index([deploymentId, groupName])
   @@map("deployment_services")
 }
 
