@@ -187,6 +187,45 @@ describeWithDb("API Routes (integration)", () => {
     expect(dep2!.lastRegisteredAt.getTime()).toBeGreaterThan(lastReg1);
   });
 
+  it("POST /register also creates expected service record (belt-and-suspenders)", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-belt", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const expected = await prisma.expectedService.findMany({ where: { deploymentId: "dep-belt" } });
+    expect(expected).toHaveLength(1);
+    expect(expected[0].serviceId).toBe("svc-a");
+    expect(expected[0].groupName).toBe("web");
+  });
+
+  it("POST /register refreshes lastPingedAt on new registration", async () => {
+    // Simulate /expect having been called a while ago
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-ping", service_id: "svc-a", group: "web" },
+    });
+
+    // Simulate time passing
+    const oldTime = new Date(Date.now() - 200_000);
+    await prisma.deployment.update({
+      where: { deploymentId: "dep-ping" },
+      data: { lastPingedAt: oldTime },
+    });
+
+    // Sidecar registers — should refresh lastPingedAt
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-ping", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+
+    const dep = await prisma.deployment.findUnique({ where: { deploymentId: "dep-ping" } });
+    expect(dep!.lastPingedAt.getTime()).toBeGreaterThan(oldTime.getTime());
+  });
+
   it("POST /register does not update lastRegisteredAt on idempotent call", async () => {
     await app.inject({
       method: "POST",
@@ -277,6 +316,8 @@ describeWithDb("API Routes (integration)", () => {
     expect(body.group_services_total).toBe(2);
     expect(body.group_services_ready).toBe(1);
     expect(body.pending_pods).toContain("svc-b/svc-b-pod-1");
+    // Backward compat: pending_services still present
+    expect(body.pending_services).toContain("svc-b/svc-b-pod-1");
   });
 
   it("POST /ready waits for all pods of the same service", async () => {

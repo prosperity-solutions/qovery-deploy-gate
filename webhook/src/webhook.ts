@@ -190,14 +190,24 @@ function fireAndForgetExpect(
     group,
   });
 
-  fetch(`${gateUrl}/expect`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body,
-    signal: AbortSignal.timeout(5000),
-  }).catch((err) => {
-    log.warn(`Failed to pre-register expected service ${serviceId}: ${err.message}`);
-  });
+  const attempt = (n: number): Promise<void> =>
+    fetch(`${gateUrl}/expect`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+      signal: AbortSignal.timeout(5000),
+    }).then((res) => {
+      if (!res.ok && n < 3) {
+        return new Promise<void>((r) => setTimeout(r, 500 * n)).then(() => attempt(n + 1));
+      }
+    }).catch((err) => {
+      if (n < 3) {
+        return new Promise<void>((r) => setTimeout(r, 500 * n)).then(() => attempt(n + 1));
+      }
+      log.warn(`Failed to pre-register expected service ${serviceId} after 3 attempts: ${err.message}`);
+    });
+
+  attempt(1);
 }
 
 // ---- Route registration ----

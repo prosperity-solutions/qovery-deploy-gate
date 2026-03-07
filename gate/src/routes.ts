@@ -174,11 +174,30 @@ export function registerRoutes(
         update: {},
       });
 
-      // Update lastRegisteredAt when a new pod registers (resets settle timer)
       if (!existingBefore) {
+        // Update lastRegisteredAt (resets settle timer) and lastPingedAt (prevents
+        // early expiry if /expect was called long before node provisioning completed)
         await tx.deployment.update({
           where: { deploymentId: deployment_id },
-          data: { lastRegisteredAt: now },
+          data: { lastRegisteredAt: now, lastPingedAt: now },
+        });
+
+        // Belt-and-suspenders: also upsert the expected service record.
+        // If the webhook's fire-and-forget /expect call failed, this ensures the
+        // gate still knows about this service.
+        await tx.expectedService.upsert({
+          where: {
+            deploymentId_serviceId: {
+              deploymentId: deployment_id,
+              serviceId: service_id,
+            },
+          },
+          create: {
+            deploymentId: deployment_id,
+            serviceId: service_id,
+            groupName: group,
+          },
+          update: {},
         });
       }
 
@@ -308,6 +327,7 @@ export function registerRoutes(
         group: service.groupName,
         group_services_total: groupServices.length,
         group_services_ready: groupServices.length - pendingPods.length,
+        pending_services: pendingPods.map((s) => `${s.serviceId}/${s.podName}`),
         pending_pods: pendingPods.map((s) => `${s.serviceId}/${s.podName}`),
         missing_services: missingServices.map((es) => es.serviceId),
         settle_time_remaining_seconds: (allPodsReady && allExpectedPresent) ? settleTimeRemainingSeconds : undefined,
@@ -370,15 +390,19 @@ export function registerRoutes(
       }
 
       // Add expected service info per group
+      // Build per-group registered service ID sets once
+      const groupRegisteredIds: Record<string, Set<string>> = {};
+      for (const groupName of Object.keys(groups)) {
+        groupRegisteredIds[groupName] = new Set(groups[groupName].services.map((s) => s.service_id));
+      }
+
       for (const es of d.expectedServices) {
         if (!groups[es.groupName]) {
           groups[es.groupName] = { total: 0, ready: 0, expected: 0, missing_services: [], services: [] };
+          groupRegisteredIds[es.groupName] = new Set();
         }
         groups[es.groupName].expected++;
-        const registeredServiceIds = new Set(
-          groups[es.groupName].services.map((s) => s.service_id)
-        );
-        if (!registeredServiceIds.has(es.serviceId)) {
+        if (!groupRegisteredIds[es.groupName].has(es.serviceId)) {
           groups[es.groupName].missing_services.push(es.serviceId);
         }
       }
