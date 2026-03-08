@@ -446,10 +446,25 @@ export function registerRoutes(
         derivedStatus = "ACTIVE";
       }
 
+      // Compute time-to-success: from deployment creation to the last pod becoming ready
+      let completed_at: string | null = null;
+      let time_to_success_seconds: number | null = null;
+      if (derivedStatus === "COMPLETED" && d.services.length > 0) {
+        const lastReadyAt = d.services.reduce((max, s) => {
+          if (s.readyAt && s.readyAt > max) return s.readyAt;
+          return max;
+        }, d.services[0].readyAt ?? d.createdAt);
+        completed_at = lastReadyAt.toISOString();
+        time_to_success_seconds = Math.round((lastReadyAt.getTime() - d.createdAt.getTime()) / 1000);
+      }
+
       return {
         deployment_id: d.deploymentId,
         status: derivedStatus,
+        created_at: d.createdAt.toISOString(),
         first_registered_at: d.firstRegisteredAt.toISOString(),
+        completed_at,
+        time_to_success_seconds,
         groups,
       };
     };
