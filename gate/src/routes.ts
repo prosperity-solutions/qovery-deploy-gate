@@ -407,6 +407,7 @@ export function registerRoutes(
         group: service.groupName,
         group_services_total: groupServices.length,
         group_services_ready: groupServices.length - pendingPods.length,
+        // pending_services is kept as an alias for pending_pods for backward compatibility
         pending_services: pendingPods.map((s) => `${s.serviceId}/${s.podName}`),
         pending_pods: pendingPods.map((s) => `${s.serviceId}/${s.podName}`),
         missing_services: missingServices.map((es) => es.serviceId),
