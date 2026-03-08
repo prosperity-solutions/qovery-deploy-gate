@@ -65,5 +65,6 @@ model CompletedGroup {
   deployment Deployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
 
   @@unique([deploymentId, groupName])
+  @@index([deploymentId])
   @@map("completed_groups")
 }

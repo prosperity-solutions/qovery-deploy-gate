@@ -10,5 +10,6 @@ CREATE TABLE "completed_groups" (
 );
 
 CREATE UNIQUE INDEX "completed_groups_deployment_id_group_name_key" ON "completed_groups"("deployment_id", "group_name");
+CREATE INDEX "completed_groups_deployment_id_idx" ON "completed_groups"("deployment_id");
 
 ALTER TABLE "completed_groups" ADD CONSTRAINT "completed_groups_deployment_id_fkey" FOREIGN KEY ("deployment_id") REFERENCES "deployments"("deployment_id") ON DELETE CASCADE ON UPDATE CASCADE;
