@@ -170,7 +170,7 @@ export function registerUI(app: FastifyInstance) {
       background: #21262d;
       border-radius: 3px;
       overflow: hidden;
-      margin-bottom: 10px;
+      margin-bottom: 12px;
     }
 
     .progress-bar-fill {
@@ -191,29 +191,123 @@ export function registerUI(app: FastifyInstance) {
       background: #484f58;
     }
 
-    .services-list {
+    /* Service hierarchy list */
+    .service-list {
+      list-style: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .service-item {
+      margin-bottom: 8px;
+    }
+
+    .service-item:last-child {
+      margin-bottom: 0;
+    }
+
+    .service-header {
       display: flex;
-      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #c9d1d9;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      padding: 4px 0;
+    }
+
+    .service-icon {
+      font-size: 11px;
+      width: 16px;
+      text-align: center;
+      flex-shrink: 0;
+    }
+
+    .service-icon.ready { color: #3fb950; }
+    .service-icon.pending { color: #d29922; }
+    .service-icon.awaiting { color: #6e7681; }
+
+    .service-status-label {
+      font-size: 11px;
+      font-weight: 400;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      padding: 1px 6px;
+      border-radius: 3px;
+    }
+
+    .label-ready {
+      background: #1b3a2d;
+      color: #3fb950;
+    }
+
+    .label-pending {
+      background: #2a1e0f;
+      color: #d29922;
+    }
+
+    .label-awaiting {
+      background: #1c1e24;
+      color: #6e7681;
+    }
+
+    .pod-list {
+      list-style: none;
+      margin: 2px 0 0 24px;
+      padding: 0;
+      border-left: 1px solid #21262d;
+    }
+
+    .pod-item {
+      font-size: 12px;
+      font-family: 'SFMono-Regular', Consolas, monospace;
+      color: #8b949e;
+      padding: 2px 0 2px 12px;
+      display: flex;
+      align-items: center;
       gap: 6px;
     }
 
-    .service-tag {
+    .pod-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .pod-dot.ready { background: #3fb950; }
+    .pod-dot.pending { background: #d29922; }
+
+    .pod-ready-time {
+      color: #484f58;
+      font-size: 11px;
+    }
+
+    /* Stats footer */
+    .deployment-stats {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #21262d;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 16px;
       font-size: 12px;
-      padding: 3px 8px;
-      border-radius: 4px;
+      color: #6e7681;
+    }
+
+    .stat {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .stat-label {
+      color: #484f58;
+    }
+
+    .stat-value {
+      color: #8b949e;
       font-family: 'SFMono-Regular', Consolas, monospace;
-    }
-
-    .service-ready {
-      background: #1b3a2d;
-      color: #3fb950;
-      border: 1px solid #238636;
-    }
-
-    .service-pending {
-      background: #2a1e0f;
-      color: #d29922;
-      border: 1px solid #9e6a03;
     }
 
     .empty-state {
@@ -298,6 +392,15 @@ export function registerUI(app: FastifyInstance) {
       return Math.floor(hours / 24) + 'd ago';
     }
 
+    function formatDuration(seconds) {
+      if (seconds < 60) return seconds + 's';
+      const m = Math.floor(seconds / 60);
+      const s = seconds % 60;
+      if (m < 60) return m + 'm ' + s + 's';
+      const h = Math.floor(m / 60);
+      return h + 'h ' + (m % 60) + 'm';
+    }
+
     function renderDeployment(deployment) {
       const groups = deployment.groups;
       const groupNames = Object.keys(groups);
@@ -305,46 +408,88 @@ export function registerUI(app: FastifyInstance) {
       let groupsHtml = '';
       for (const name of groupNames) {
         const g = groups[name];
-        const pct = g.total > 0 ? Math.round((g.ready / g.total) * 100) : 0;
+        const totalIncludingMissing = g.total + (g.missing_services ? g.missing_services.length : 0);
+        const pct = totalIncludingMissing > 0 ? Math.round((g.ready / totalIncludingMissing) * 100) : 0;
         const fillClass = pct === 100 ? 'complete' : pct > 0 ? 'partial' : 'empty';
 
-        let servicesHtml = '';
+        // Group services by service_id
+        const byService = {};
         for (const svc of g.services) {
-          const cls = svc.ready ? 'service-ready' : 'service-pending';
-          const icon = svc.ready ? '&#10003;' : '&#9679;';
-          const ns = svc.namespace ? esc(svc.namespace) + '/' : '';
-          const label = svc.pod_name ? ns + esc(svc.pod_name) : esc(svc.service_id);
-          servicesHtml += '<span class="service-tag ' + cls + '" title="' + esc(svc.service_id) + '">' + icon + ' ' + label + '</span>';
+          if (!byService[svc.service_id]) byService[svc.service_id] = [];
+          byService[svc.service_id].push(svc);
         }
 
-        let missingHtml = '';
+        let serviceListHtml = '';
+
+        // Registered services (grouped by service_id)
+        for (const [svcId, pods] of Object.entries(byService)) {
+          const allReady = pods.every(function(p) { return p.ready; });
+          const anyReady = pods.some(function(p) { return p.ready; });
+          const iconClass = allReady ? 'ready' : 'pending';
+          const icon = allReady ? '&#10003;' : '&#9679;';
+          const labelClass = allReady ? 'label-ready' : 'label-pending';
+          const labelText = allReady ? 'ready' : (anyReady ? pods.filter(function(p) { return p.ready; }).length + '/' + pods.length + ' ready' : 'starting');
+
+          let podListHtml = '';
+          for (const pod of pods) {
+            const dotClass = pod.ready ? 'ready' : 'pending';
+            const ns = pod.namespace ? esc(pod.namespace) + '/' : '';
+            const readyTime = pod.ready_at ? '<span class="pod-ready-time">ready ' + timeAgo(pod.ready_at) + '</span>' : '';
+            podListHtml += '<li class="pod-item"><span class="pod-dot ' + dotClass + '"></span>' + ns + esc(pod.pod_name) + ' ' + readyTime + '</li>';
+          }
+
+          serviceListHtml += '<li class="service-item">' +
+            '<div class="service-header"><span class="service-icon ' + iconClass + '">' + icon + '</span>' + esc(svcId) +
+            ' <span class="service-status-label ' + labelClass + '">' + labelText + '</span></div>' +
+            '<ul class="pod-list">' + podListHtml + '</ul>' +
+          '</li>';
+        }
+
+        // Missing/awaiting services
         if (g.missing_services && g.missing_services.length > 0) {
           for (const svcId of g.missing_services) {
-            missingHtml += '<span class="service-tag service-pending" title="Expected but no pod registered yet">&#9888; ' + esc(svcId) + '</span>';
+            serviceListHtml += '<li class="service-item">' +
+              '<div class="service-header"><span class="service-icon awaiting">&#9676;</span>' + esc(svcId) +
+              ' <span class="service-status-label label-awaiting">awaiting pod</span></div>' +
+            '</li>';
           }
         }
+
+        const awaitingCount = g.missing_services ? g.missing_services.length : 0;
+        const progressText = g.ready + ' / ' + totalIncludingMissing + ' ready' + (awaitingCount > 0 ? ' (' + awaitingCount + ' awaiting)' : '');
 
         groupsHtml += '<div class="group">' +
           '<div class="group-header">' +
             '<span class="group-name">' + esc(name) + '</span>' +
-            '<span class="group-progress">' + g.ready + ' / ' + g.total + ' ready' + (g.missing_services && g.missing_services.length > 0 ? ' (' + g.missing_services.length + ' awaiting)' : '') + '</span>' +
+            '<span class="group-progress">' + progressText + '</span>' +
           '</div>' +
           '<div class="progress-bar"><div class="progress-bar-fill ' + fillClass + '" style="width: ' + pct + '%"></div></div>' +
-          '<div class="services-list">' + servicesHtml + missingHtml + '</div>' +
+          '<ul class="service-list">' + serviceListHtml + '</ul>' +
         '</div>';
       }
 
       const statusClasses = { ACTIVE: 'status-active', COMPLETED: 'status-completed', EXPIRED: 'status-expired' };
       const statusClass = statusClasses[deployment.status] || 'status-completed';
-      const meta = 'Registered ' + timeAgo(deployment.first_registered_at);
+
+      // Stats
+      let statsHtml = '<div class="deployment-stats">';
+      statsHtml += '<div class="stat"><span class="stat-label">Created:</span> <span class="stat-value">' + timeAgo(deployment.created_at) + '</span></div>';
+      statsHtml += '<div class="stat"><span class="stat-label">First pod registered:</span> <span class="stat-value">' + timeAgo(deployment.first_registered_at) + '</span></div>';
+      if (deployment.completed_at) {
+        statsHtml += '<div class="stat"><span class="stat-label">Completed:</span> <span class="stat-value">' + timeAgo(deployment.completed_at) + '</span></div>';
+      }
+      if (deployment.time_to_success_seconds !== null && deployment.time_to_success_seconds !== undefined) {
+        statsHtml += '<div class="stat"><span class="stat-label">Time to success:</span> <span class="stat-value">' + formatDuration(deployment.time_to_success_seconds) + '</span></div>';
+      }
+      statsHtml += '</div>';
 
       return '<div class="deployment-card">' +
         '<div class="deployment-header">' +
           '<span class="deployment-id">' + esc(deployment.deployment_id) + '</span>' +
           '<span class="status-badge ' + statusClass + '">' + esc(deployment.status) + '</span>' +
         '</div>' +
-        '<div class="deployment-meta">' + meta + '</div>' +
         groupsHtml +
+        statsHtml +
       '</div>';
     }
 
