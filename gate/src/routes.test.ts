@@ -27,7 +27,7 @@ describeWithDb("API Routes (integration)", () => {
   });
 
   beforeEach(async () => {
-    // CASCADE deletes clean up related services and expected services
+    // CASCADE deletes clean up related services, expected services, and completed groups
     await prisma.deployment.deleteMany();
   });
 
@@ -404,8 +404,8 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().gate_status).toBe("open");
-    expect(res.json().group_services_total).toBe(1);
-    expect(res.json().group_services_ready).toBe(1);
+    // Second call hits completed group shortcut
+    expect(res.json().message).toBe("Group already completed");
   });
 
   // --- /ready + /expect interaction tests ---
@@ -582,6 +582,101 @@ describeWithDb("API Routes (integration)", () => {
 
     expect(res.statusCode).toBe(200);
     expect(res.json().gate_status).toBe("open");
+  });
+
+  // --- completed group / autoscaling tests ---
+
+  it("POST /ready returns instant open for autoscaling pods after group completed", async () => {
+    // Deploy svc-a, make it ready — gate opens and records completion
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    const openRes = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    expect(openRes.json().gate_status).toBe("open");
+
+    // Verify completion was recorded
+    const cg = await prisma.completedGroup.findUnique({
+      where: { deploymentId_groupName: { deploymentId: "dep-auto", groupName: "web" } },
+    });
+    expect(cg).not.toBeNull();
+
+    // Autoscaler adds a new pod — register + ready should get instant open
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+    const autoRes = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto", service_id: "svc-a", pod_name: "svc-a-pod-2" },
+    });
+    expect(autoRes.json().gate_status).toBe("open");
+    expect(autoRes.json().message).toBe("Group already completed");
+  });
+
+  it("POST /register does not create expected service for autoscaling pod after group completed", async () => {
+    // Complete the group
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto2", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto2", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    // Autoscaler adds a new service type (shouldn't happen, but tests the guard)
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto2", service_id: "svc-new", pod_name: "svc-new-pod-1", group: "web" },
+    });
+
+    // Should NOT have created an expected service for svc-new
+    const expected = await prisma.expectedService.findUnique({
+      where: { deploymentId_serviceId: { deploymentId: "dep-auto2", serviceId: "svc-new" } },
+    });
+    expect(expected).toBeNull();
+  });
+
+  it("GET /status hides autoscaling pods that registered after group completion", async () => {
+    // Complete a deployment
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto3", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto3", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    // Autoscaler adds a pod after completion
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto3", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    // Should show as completed with only the original pod
+    const dep = body.recent_completed.find((d: { deployment_id: string }) => d.deployment_id === "dep-auto3");
+    expect(dep).toBeDefined();
+    expect(dep.status).toBe("COMPLETED");
+    expect(dep.groups.web.services).toHaveLength(1);
+    expect(dep.groups.web.services[0].pod_name).toBe("svc-a-pod-1");
   });
 
   // --- /status tests ---
