@@ -191,24 +191,38 @@ export function registerRoutes(
           data: { lastPingedAt: now },
         });
 
-        // Belt-and-suspenders: also upsert the expected service record.
-        // If the webhook's fire-and-forget /expect call failed, this ensures the
-        // gate still knows about this service. On conflict, update groupName to
-        // match the sidecar's actual group (corrects any mismatch from /expect).
-        await tx.expectedService.upsert({
+        // Skip belt-and-suspenders for autoscaling pods — if the group already
+        // completed, don't add new expected service records (they'd break the
+        // COMPLETED status and add noise to the UI)
+        const groupAlreadyCompleted = await tx.completedGroup.findUnique({
           where: {
-            deploymentId_serviceId: {
+            deploymentId_groupName: {
               deploymentId: deployment_id,
-              serviceId: service_id,
+              groupName: group,
             },
           },
-          create: {
-            deploymentId: deployment_id,
-            serviceId: service_id,
-            groupName: group,
-          },
-          update: { groupName: group },
         });
+
+        if (!groupAlreadyCompleted) {
+          // Belt-and-suspenders: also upsert the expected service record.
+          // If the webhook's fire-and-forget /expect call failed, this ensures the
+          // gate still knows about this service. On conflict, update groupName to
+          // match the sidecar's actual group (corrects any mismatch from /expect).
+          await tx.expectedService.upsert({
+            where: {
+              deploymentId_serviceId: {
+                deploymentId: deployment_id,
+                serviceId: service_id,
+              },
+            },
+            create: {
+              deploymentId: deployment_id,
+              serviceId: service_id,
+              groupName: group,
+            },
+            update: { groupName: group },
+          });
+        }
       }
 
       // Even on idempotent calls, refresh lastPingedAt to prevent expiry
@@ -272,6 +286,7 @@ export function registerRoutes(
         data: { lastPingedAt: new Date() },
       });
 
+      // Look up the pod to determine its group
       const service = await tx.deploymentService.findUnique({
         where: {
           deploymentId_serviceId_podName_namespace: {
@@ -285,6 +300,32 @@ export function registerRoutes(
 
       if (!service) {
         return { gate_status: "not_found" as const, reason: `Pod ${pod_name} (service ${service_id}) is not registered for deployment ${deployment_id}` };
+      }
+
+      // If this group already completed, immediately open the gate.
+      // This handles autoscaling pods — they shouldn't be gated.
+      const completedGroup = await tx.completedGroup.findUnique({
+        where: {
+          deploymentId_groupName: {
+            deploymentId: deployment_id,
+            groupName: service.groupName,
+          },
+        },
+      });
+
+      if (completedGroup) {
+        // Mark pod ready so it doesn't linger as pending
+        if (!service.readyAt) {
+          await tx.deploymentService.update({
+            where: { id: service.id },
+            data: { readyAt: new Date() },
+          });
+        }
+        return {
+          gate_status: "open" as const,
+          group: service.groupName,
+          message: "Group already completed",
+        };
       }
 
       // Mark the pod as ready if not already
@@ -338,6 +379,21 @@ export function registerRoutes(
       const settleTimeRemainingSeconds = Math.ceil(settleTimeRemainingMs / 1000);
 
       if (allPodsReady && allExpectedPresent && settleTimeMet) {
+        // Record group completion so future autoscaling pods get instant "open"
+        await tx.completedGroup.upsert({
+          where: {
+            deploymentId_groupName: {
+              deploymentId: deployment_id,
+              groupName: service.groupName,
+            },
+          },
+          create: {
+            deploymentId: deployment_id,
+            groupName: service.groupName,
+          },
+          update: {},
+        });
+
         return {
           gate_status: "open" as const,
           group: service.groupName,
@@ -382,12 +438,18 @@ export function registerRoutes(
 
     const deployments = await prisma.deployment.findMany({
       where: { createdAt: { gt: cutoff } },
-      include: { services: true, expectedServices: true },
+      include: { services: true, expectedServices: true, completedGroups: true },
       orderBy: { createdAt: "desc" },
       take: 100,
     });
 
     const formatDeployment = (d: typeof deployments[number]) => {
+      // Build a map of group completion times to filter out autoscaling pods
+      const groupCompletionTimes: Record<string, Date> = {};
+      for (const cg of d.completedGroups) {
+        groupCompletionTimes[cg.groupName] = cg.completedAt;
+      }
+
       const groups: Record<
         string,
         {
@@ -400,6 +462,12 @@ export function registerRoutes(
       > = {};
 
       for (const svc of d.services) {
+        // Skip pods that registered after the group completed (autoscaling pods)
+        const completedAt = groupCompletionTimes[svc.groupName];
+        if (completedAt && svc.registeredAt > completedAt) {
+          continue;
+        }
+
         if (!groups[svc.groupName]) {
           groups[svc.groupName] = { total: 0, ready: 0, expected: 0, missing_services: [], services: [] };
         }
@@ -432,9 +500,9 @@ export function registerRoutes(
         }
       }
 
-      // Derive status entirely from data
-      const allReady = d.services.length > 0 && d.services.every((s) => s.readyAt !== null);
-      // Check expected services per-group (consistent with /ready logic)
+      // Derive status from the filtered groups (excludes autoscaling pods)
+      const allGroupServices = Object.values(groups).flatMap((g) => g.services);
+      const allReady = allGroupServices.length > 0 && allGroupServices.every((s) => s.ready);
       const allExpectedPresent = Object.values(groups).every((g) => g.missing_services.length === 0);
 
       let derivedStatus: "COMPLETED" | "EXPIRED" | "ACTIVE";
@@ -449,11 +517,11 @@ export function registerRoutes(
       // Compute time-to-success: from deployment creation to the last pod becoming ready
       let completed_at: string | null = null;
       let time_to_success_seconds: number | null = null;
-      if (derivedStatus === "COMPLETED" && d.services.length > 0) {
-        const lastReadyAt = d.services.reduce((max, s) => {
-          if (s.readyAt && s.readyAt > max) return s.readyAt;
-          return max;
-        }, d.services[0].readyAt ?? d.createdAt);
+      if (derivedStatus === "COMPLETED" && allGroupServices.length > 0) {
+        const readyTimes = allGroupServices
+          .map((s) => s.ready_at ? new Date(s.ready_at) : null)
+          .filter((t): t is Date => t !== null);
+        const lastReadyAt = readyTimes.reduce((max, t) => (t > max ? t : max), readyTimes[0] ?? d.createdAt);
         completed_at = lastReadyAt.toISOString();
         time_to_success_seconds = Math.round((lastReadyAt.getTime() - d.createdAt.getTime()) / 1000);
       }
