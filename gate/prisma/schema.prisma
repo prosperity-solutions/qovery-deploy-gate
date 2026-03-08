@@ -17,6 +17,7 @@ model Deployment {
 
   services         DeploymentService[]
   expectedServices ExpectedService[]
+  completedGroups  CompletedGroup[]
 
   @@index([createdAt])
   @@map("deployments")
@@ -53,4 +54,17 @@ model ExpectedService {
   @@index([deploymentId])
   @@index([deploymentId, groupName])
   @@map("expected_services")
+}
+
+model CompletedGroup {
+  id           Int      @id @default(autoincrement())
+  deploymentId String   @map("deployment_id")
+  groupName    String   @map("group_name")
+  completedAt  DateTime @default(now()) @map("completed_at")
+
+  deployment Deployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
+
+  @@unique([deploymentId, groupName])
+  @@index([deploymentId])
+  @@map("completed_groups")
 }
