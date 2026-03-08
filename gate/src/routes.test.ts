@@ -679,6 +679,60 @@ describeWithDb("API Routes (integration)", () => {
     expect(dep.groups.web.services[0].pod_name).toBe("svc-a-pod-1");
   });
 
+  it("POST /ready handles autoscaling pod in multi-service group", async () => {
+    // Complete a group with two services
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-b", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-b", pod_name: "svc-b-pod-1" },
+    });
+
+    // Autoscaler adds a new pod for svc-a
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-auto4", service_id: "svc-a", pod_name: "svc-a-pod-2" },
+    });
+    expect(res.json().gate_status).toBe("open");
+    expect(res.json().message).toBe("Group already completed");
+
+    // Status should show only original 2 pods
+    const statusRes = await app.inject({ method: "GET", url: "/status" });
+    const dep = statusRes.json().recent_completed.find((d: { deployment_id: string }) => d.deployment_id === "dep-auto4");
+    expect(dep).toBeDefined();
+    expect(dep.groups.web.services).toHaveLength(2);
+  });
+
   // --- /status tests ---
 
   it("GET /status returns deployment data with pod info", async () => {
