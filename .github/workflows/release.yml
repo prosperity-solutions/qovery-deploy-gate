@@ -103,3 +103,13 @@ jobs:
           helm dependency build ./chart
           helm package ./chart
           helm push qovery-deploy-gate-*.tgz oci://ghcr.io/prosperity-solutions/qovery-deploy-gate
+
+  publish-release:
+    needs: [release, build-images, push-chart]
+    if: needs.release.outputs.new_release_published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Publish release
+        run: gh release edit "v${{ needs.release.outputs.new_release_version }}" --draft=false --repo "${{ github.repository }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
