@@ -61,6 +61,8 @@ No changes to application images, Dockerfiles, env vars, or readiness probes. Co
 
 ## Where It Fits in Qovery's Pipeline
 
+> **Note:** Synchronized multi-service readiness is an unsolved problem across the Kubernetes ecosystem, not specific to Qovery. Argo Rollouts, Flagger, and service meshes handle progressive delivery for individual services but none coordinate readiness across multiple services. The common workarounds are backward-compatible APIs, feature flags, or accepting the skew window. Everyone builds something custom. This project provides a generic, infrastructure-level solution for Qovery environments.
+
 Qovery's deployment pipeline stages control **what is built and started together** — but not what becomes **ready** together. When you deploy an environment, Qovery orchestrates the rollout: building images, provisioning nodes, and starting pods. Each service independently passes its readiness probe and starts receiving traffic as soon as it's healthy.
 
 The deploy gate fills the gap between deployment *start* and deployment *finish*. Qovery ensures your services deploy together. The gate ensures they go live together.
@@ -77,6 +79,14 @@ With the gate:
   Worker pod ready ──┤
                      └──► gate opens ──► both switch simultaneously
 ```
+
+### Deployment strategies
+
+The gate is most effective with **blue/green-style rolling deployments** — Qovery's default strategy (`maxSurge=100%`, `maxUnavailable=0%`). In this mode, old pods serve traffic while new pods are held by the gate. When all new pods are ready, traffic switches simultaneously. If the gate never opens, old pods serve indefinitely and Qovery rolls back. This gives you zero downtime and zero version skew.
+
+**Progressive rolling deployments** (e.g., `maxSurge=25%`, `maxUnavailable=25%`) replace pods incrementally. The gate still prevents version skew — no new pod receives traffic until every group member is ready — but since it holds *all* new pods until the group completes, it effectively turns a progressive rollout into a blue/green one. This works correctly but requires enough cluster capacity to run both the old and new full replica sets simultaneously.
+
+**Recreate strategy** (`maxUnavailable=100%`) kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If your services can tolerate downtime during deploys, the gate adds coordination overhead without much benefit. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
 
 ## Quick Start
 
