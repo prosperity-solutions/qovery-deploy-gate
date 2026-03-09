@@ -208,26 +208,27 @@ function buildJsonPatch(
     }
   }
 
-  // Add readiness gate
+  // Add readiness gate (skip if already present)
   const readinessGate: ReadinessGate = {
     conditionType: "qovery-deploy-gate.life.li/synced",
   };
 
   const existingGates = pod.spec?.readinessGates;
-  if (existingGates && existingGates.length > 0) {
-    // Append to existing array
-    patches.push({
-      op: "add",
-      path: "/spec/readinessGates/-",
-      value: readinessGate,
-    });
-  } else {
-    // Create the array
-    patches.push({
-      op: "add",
-      path: "/spec/readinessGates",
-      value: [readinessGate],
-    });
+  const gateExists = existingGates?.some((g) => g.conditionType === readinessGate.conditionType);
+  if (!gateExists) {
+    if (existingGates && existingGates.length > 0) {
+      patches.push({
+        op: "add",
+        path: "/spec/readinessGates/-",
+        value: readinessGate,
+      });
+    } else {
+      patches.push({
+        op: "add",
+        path: "/spec/readinessGates",
+        value: [readinessGate],
+      });
+    }
   }
 
   return patches;
@@ -328,6 +329,19 @@ export function registerWebhook(
     // Build sidecar and JSON patch
     const sidecar = buildSidecarContainer(config, labels);
     const patches = buildJsonPatch(pod, sidecar);
+
+    // If no patches (sidecar already present), allow without mutation
+    if (patches.length === 0) {
+      return {
+        apiVersion: "admission.k8s.io/v1",
+        kind: "AdmissionReview",
+        response: {
+          uid: req.uid,
+          allowed: true,
+        },
+      };
+    }
+
     const patchBase64 = Buffer.from(JSON.stringify(patches)).toString("base64");
 
     // Pre-register the expected service with the gate (fire-and-forget).

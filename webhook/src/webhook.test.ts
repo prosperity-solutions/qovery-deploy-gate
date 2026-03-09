@@ -349,7 +349,7 @@ describe("Mutating Admission Webhook", () => {
     expect(volumePatch.value.name).toBe("gate-sidecar-sa-token");
   });
 
-  it("should skip injection if sidecar already present", async () => {
+  it("should skip injection and /expect if sidecar already present", async () => {
     fetchCalls.length = 0;
     const body = makeAdmissionReview(
       {
@@ -367,10 +367,41 @@ describe("Mutating Admission Webhook", () => {
       payload: body,
     });
 
+    await new Promise((r) => setTimeout(r, 10));
+
     const review = JSON.parse(res.payload);
-    // Patch should be empty (base64 of "[]")
+    expect(review.response.allowed).toBe(true);
+    // No patch should be sent
+    expect(review.response.patch).toBeUndefined();
+    expect(review.response.patchType).toBeUndefined();
+    // No /expect call
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("should not duplicate readiness gate if already present", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-e",
+        "qovery.com/deployment-id": "d5",
+        "qovery.com/service-id": "s5",
+      },
+      [{ conditionType: "qovery-deploy-gate.life.li/synced" }]
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
     const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
-    expect(patches).toHaveLength(0);
+
+    // Should have container + volume patches but NO readiness gate patch
+    const gatePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/readinessGates/-" || p.path === "/spec/readinessGates"
+    );
+    expect(gatePatch).toBeUndefined();
   });
 
   it("healthz should return 200", async () => {
