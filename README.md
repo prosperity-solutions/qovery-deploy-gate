@@ -220,6 +220,19 @@ Sidecars poll at a fixed 5-second interval, creating predictable, bounded load p
 
 In short: the sidecar is not a workaround for the gate being outside the cluster. It's a design feature that keeps the gate simple, makes failures safe, and distributes responsibility where it belongs.
 
+## Why the Webhook and Gate Are Separate Services
+
+The webhook and gate could be a single service — they both run in-cluster, and the webhook already calls the gate's `/expect` endpoint. Merging them would mean one fewer deployment, service, and TLS certificate to manage.
+
+They are separate for **failure isolation**. Kubernetes admission webhooks are synchronous — the API server blocks pod creation until the webhook responds. If the webhook and gate shared a process, a Postgres outage or gate bug could cause the webhook to hang or crash, blocking **all pod creation** cluster-wide (with `failurePolicy: Fail`).
+
+By keeping them separate:
+- **Webhook down** → pod creation is blocked, but only because the admission webhook is unreachable. Qovery's deployment stalls cleanly.
+- **Gate down** → pods are created and sidecars are injected normally. Sidecars just can't reach the gate yet and retry every 5 seconds. Old pods keep serving.
+- **Postgres down** → only the gate is affected. The webhook continues injecting sidecars without issue because it doesn't need the database — it fire-and-forgets `/expect` and moves on.
+
+This separation ensures that a coordination-layer problem (the gate) never escalates into a platform-level problem (pod creation failing).
+
 ## Edge Cases
 
 ### Redeployment with unchanged images
