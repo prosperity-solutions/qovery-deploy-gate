@@ -21,7 +21,11 @@ function buildApp(): FastifyInstance {
   return app;
 }
 
-function makeAdmissionReview(labels: Record<string, string>, readinessGates?: { conditionType: string }[]) {
+function makeAdmissionReview(
+  labels: Record<string, string>,
+  readinessGates?: { conditionType: string }[],
+  extras?: { volumes?: { name: string; [key: string]: unknown }[]; containers?: { name: string; image: string }[] }
+) {
   const pod: Record<string, unknown> = {
     metadata: {
       name: "test-pod",
@@ -29,13 +33,14 @@ function makeAdmissionReview(labels: Record<string, string>, readinessGates?: { 
       labels,
     },
     spec: {
-      containers: [
+      containers: extras?.containers ?? [
         {
           name: "main",
           image: "nginx:latest",
         },
       ],
       ...(readinessGates ? { readinessGates } : {}),
+      ...(extras?.volumes ? { volumes: extras.volumes } : {}),
     },
   };
 
@@ -313,6 +318,59 @@ describe("Mutating Admission Webhook", () => {
 
     // But no /expect call
     expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("should append projected volume to existing volumes", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-c",
+        "qovery.com/deployment-id": "d3",
+        "qovery.com/service-id": "s3",
+      },
+      undefined,
+      { volumes: [{ name: "app-config", configMap: { name: "my-config" } }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+
+    // Volume should be appended (using /-) not replaced
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes/-"
+    );
+    expect(volumePatch).toBeDefined();
+    expect(volumePatch.op).toBe("add");
+    expect(volumePatch.value.name).toBe("gate-sidecar-sa-token");
+  });
+
+  it("should skip injection if sidecar already present", async () => {
+    fetchCalls.length = 0;
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-d",
+        "qovery.com/deployment-id": "d4",
+        "qovery.com/service-id": "s4",
+      },
+      undefined,
+      { containers: [{ name: "main", image: "nginx:latest" }, { name: "gate-sidecar", image: "old-sidecar:v1" }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    // Patch should be empty (base64 of "[]")
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+    expect(patches).toHaveLength(0);
   });
 
   it("healthz should return 200", async () => {

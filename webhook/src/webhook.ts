@@ -48,6 +48,7 @@ interface Container {
   name: string;
   image: string;
   env?: EnvVar[];
+  volumeMounts?: VolumeMount[];
   resources?: {
     requests?: Record<string, string>;
     limits?: Record<string, string>;
@@ -142,9 +143,14 @@ function buildJsonPatch(
   sidecar: Container
 ): JsonPatchOp[] {
   const patches: JsonPatchOp[] = [];
+  const containers = pod.spec?.containers;
+
+  // Guard: skip injection if sidecar already present (e.g., webhook reinvocation)
+  if (containers?.some((c) => c.name === "gate-sidecar")) {
+    return patches;
+  }
 
   // Add sidecar to containers array (containers always exists per k8s spec)
-  const containers = pod.spec?.containers;
   if (containers && containers.length > 0) {
     patches.push({
       op: "add",
@@ -185,18 +191,21 @@ function buildJsonPatch(
   };
 
   const existingVolumes = pod.spec?.volumes;
-  if (existingVolumes && existingVolumes.length > 0) {
-    patches.push({
-      op: "add",
-      path: "/spec/volumes/-",
-      value: saVolume,
-    });
-  } else {
-    patches.push({
-      op: "add",
-      path: "/spec/volumes",
-      value: [saVolume],
-    });
+  const volumeExists = existingVolumes?.some((v) => v.name === saVolume.name);
+  if (!volumeExists) {
+    if (existingVolumes && existingVolumes.length > 0) {
+      patches.push({
+        op: "add",
+        path: "/spec/volumes/-",
+        value: saVolume,
+      });
+    } else {
+      patches.push({
+        op: "add",
+        path: "/spec/volumes",
+        value: [saVolume],
+      });
+    }
   }
 
   // Add readiness gate
