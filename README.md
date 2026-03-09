@@ -82,13 +82,13 @@ With the gate:
 
 ### Deployment strategies
 
-The gate works with any Kubernetes rollout strategy, but the value it provides differs depending on the configuration.
+The gate **requires a blue/green-style rolling update strategy** (`maxSurge=100%`, `maxUnavailable=0%`) on all gated services. This is not Qovery's default — you need to configure it via Qovery's [advanced settings](https://hub.qovery.com/docs/using-qovery/configuration/advanced-settings/).
 
-**Blue/green-style rolling** (`maxSurge=100%`, `maxUnavailable=0%`) is the ideal setup. Kubernetes creates a full set of new pods while old pods keep serving. The gate holds new pods from becoming ready, so traffic stays on old pods until every group member is up. Then all switch simultaneously — zero downtime, zero version skew. If the gate never opens, old pods serve indefinitely and Qovery rolls back. We recommend configuring this via Qovery's [advanced settings](https://hub.qovery.com/docs/using-qovery/configuration/advanced-settings/) for services that use the gate.
+**Why this is required:** The gate holds new pods from becoming ready via a Kubernetes readiness gate. With a progressive rolling strategy (e.g., `maxSurge=25%`, `maxUnavailable=25%` — Qovery's default), Kubernetes creates only 25% of new pods and waits for them to become ready before creating more. But the gate won't open until *all* group members are ready. Kubernetes won't create the remaining 75% until the first batch is ready. Neither side progresses — the deployment **deadlocks**.
 
-**Progressive rolling** (`maxSurge=25%`, `maxUnavailable=25%` — Qovery's default) replaces pods incrementally. The gate still prevents version skew — no new pod receives traffic until every group member is ready — but since it holds *all* new pods until the group completes, it effectively turns the progressive rollout into a blue/green one. This works correctly but requires enough cluster capacity to run both the old and new full replica sets simultaneously. If you use the gate, consider switching to explicit blue/green settings to match the actual behavior.
+With `maxSurge=100%`, Kubernetes creates all new pods upfront. Old pods keep serving while the gate holds the new ones. When every group member is ready, the gate opens them all at once — zero downtime, zero version skew. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back.
 
-**Recreate** kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If your services can tolerate downtime during deploys, the gate adds coordination overhead without much benefit. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
+**Recreate strategy** kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
 
 ## Quick Start
 
