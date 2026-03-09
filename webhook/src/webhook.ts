@@ -22,9 +22,24 @@ interface PodObject {
   spec?: PodSpec;
 }
 
+interface Volume {
+  name: string;
+  projected?: {
+    sources: { serviceAccountToken?: { path: string; expirationSeconds?: number }; configMap?: { name: string; items?: { key: string; path: string }[] } }[];
+  };
+  [key: string]: unknown;
+}
+
+interface VolumeMount {
+  name: string;
+  mountPath: string;
+  readOnly?: boolean;
+}
+
 interface PodSpec {
   containers?: Container[];
   readinessGates?: ReadinessGate[];
+  volumes?: Volume[];
   automountServiceAccountToken?: boolean;
   [key: string]: unknown;
 }
@@ -101,6 +116,13 @@ function buildSidecarContainer(
         valueFrom: { fieldRef: { fieldPath: "metadata.namespace" } },
       },
     ],
+    volumeMounts: [
+      {
+        name: "gate-sidecar-sa-token",
+        mountPath: "/var/run/secrets/gate-sidecar/serviceaccount",
+        readOnly: true,
+      },
+    ],
     resources: {
       requests: { cpu: "10m", memory: "16Mi" },
       limits: { cpu: "50m", memory: "32Mi" },
@@ -138,17 +160,42 @@ function buildJsonPatch(
     });
   }
 
-  // Ensure service account token is mounted (sidecar needs K8s API access to patch
-  // pod readiness conditions). This is a pod-level setting, so all containers in the
-  // pod will have access to the token. The token is scoped to the pod's service account
-  // which our RBAC limits to pods/get and pods/status/patch.
-  // If this is a concern, a future improvement could use a projected volume to mount
-  // the token only into the gate-sidecar container.
-  if (pod.spec?.automountServiceAccountToken === false) {
+  // Inject a projected volume with the service account token and CA cert,
+  // mounted only into the gate-sidecar container. This avoids flipping
+  // automountServiceAccountToken pod-wide, so the application containers
+  // are not affected even when the platform disables token mounting.
+  const saVolume: Volume = {
+    name: "gate-sidecar-sa-token",
+    projected: {
+      sources: [
+        {
+          serviceAccountToken: {
+            path: "token",
+            expirationSeconds: 3600,
+          },
+        },
+        {
+          configMap: {
+            name: "kube-root-ca.crt",
+            items: [{ key: "ca.crt", path: "ca.crt" }],
+          },
+        },
+      ],
+    },
+  };
+
+  const existingVolumes = pod.spec?.volumes;
+  if (existingVolumes && existingVolumes.length > 0) {
     patches.push({
-      op: "replace",
-      path: "/spec/automountServiceAccountToken",
-      value: true,
+      op: "add",
+      path: "/spec/volumes/-",
+      value: saVolume,
+    });
+  } else {
+    patches.push({
+      op: "add",
+      path: "/spec/volumes",
+      value: [saVolume],
     });
   }
 

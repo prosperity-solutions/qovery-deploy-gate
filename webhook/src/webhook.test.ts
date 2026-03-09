@@ -96,8 +96,8 @@ describe("Mutating Admission Webhook", () => {
     const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
     expect(Array.isArray(patches)).toBe(true);
 
-    // Should have 2 patches: sidecar container + readiness gate
-    expect(patches.length).toBe(2);
+    // Should have 3 patches: sidecar container + projected volume + readiness gate
+    expect(patches.length).toBe(3);
 
     // Sidecar container patch
     const containerPatch = patches.find(
@@ -107,6 +107,14 @@ describe("Mutating Admission Webhook", () => {
     expect(containerPatch.op).toBe("add");
     expect(containerPatch.value.name).toBe("gate-sidecar");
     expect(containerPatch.value.image).toBe("ghcr.io/test/sidecar:latest");
+
+    // Verify sidecar has volumeMount for projected SA token
+    const volumeMount = containerPatch.value.volumeMounts?.find(
+      (vm: { name: string }) => vm.name === "gate-sidecar-sa-token"
+    );
+    expect(volumeMount).toBeDefined();
+    expect(volumeMount.mountPath).toBe("/var/run/secrets/gate-sidecar/serviceaccount");
+    expect(volumeMount.readOnly).toBe(true);
 
     // Verify env vars
     const envMap = new Map(
@@ -128,6 +136,15 @@ describe("Mutating Admission Webhook", () => {
       (e: { name: string }) => e.name === "GATE_POD_NAMESPACE"
     );
     expect(podNsEnv.valueFrom.fieldRef.fieldPath).toBe("metadata.namespace");
+
+    // Projected volume patch
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes"
+    );
+    expect(volumePatch).toBeDefined();
+    expect(volumePatch.op).toBe("add");
+    expect(volumePatch.value[0].name).toBe("gate-sidecar-sa-token");
+    expect(volumePatch.value[0].projected.sources).toHaveLength(2);
 
     // Readiness gate patch
     const gatePatch = patches.find(
