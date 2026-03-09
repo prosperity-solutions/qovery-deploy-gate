@@ -33,8 +33,8 @@ case "$GATE_POLL_INTERVAL" in
 esac
 
 # --- Kubernetes API configuration ---
-SA_TOKEN_PATH="/var/run/secrets/kubernetes.io/serviceaccount/token"
-SA_CA_PATH="/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+SA_TOKEN_PATH="/var/run/secrets/gate-sidecar/serviceaccount/token"
+SA_CA_PATH="/var/run/secrets/gate-sidecar/serviceaccount/ca.crt"
 
 if [ ! -f "$SA_TOKEN_PATH" ]; then
   log_error "Service account token not found at $SA_TOKEN_PATH"

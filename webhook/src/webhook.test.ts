@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerWebhook } from "./webhook.js";
 
@@ -21,7 +21,11 @@ function buildApp(): FastifyInstance {
   return app;
 }
 
-function makeAdmissionReview(labels: Record<string, string>, readinessGates?: { conditionType: string }[]) {
+function makeAdmissionReview(
+  labels: Record<string, string>,
+  readinessGates?: { conditionType: string }[],
+  extras?: { volumes?: { name: string; [key: string]: unknown }[]; containers?: { name: string; image: string }[] }
+) {
   const pod: Record<string, unknown> = {
     metadata: {
       name: "test-pod",
@@ -29,13 +33,14 @@ function makeAdmissionReview(labels: Record<string, string>, readinessGates?: { 
       labels,
     },
     spec: {
-      containers: [
+      containers: extras?.containers ?? [
         {
           name: "main",
           image: "nginx:latest",
         },
       ],
       ...(readinessGates ? { readinessGates } : {}),
+      ...(extras?.volumes ? { volumes: extras.volumes } : {}),
     },
   };
 
@@ -66,13 +71,16 @@ describe("Mutating Admission Webhook", () => {
     await app.ready();
   });
 
+  beforeEach(() => {
+    fetchCalls.length = 0;
+  });
+
   afterAll(async () => {
     await app.close();
     globalThis.fetch = originalFetch;
   });
 
   it("should inject sidecar for pods with qovery-deploy-gate.life.li/group label", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-123",
@@ -96,8 +104,8 @@ describe("Mutating Admission Webhook", () => {
     const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
     expect(Array.isArray(patches)).toBe(true);
 
-    // Should have 2 patches: sidecar container + readiness gate
-    expect(patches.length).toBe(2);
+    // Should have 3 patches: sidecar container + projected volume + readiness gate
+    expect(patches.length).toBe(3);
 
     // Sidecar container patch
     const containerPatch = patches.find(
@@ -107,6 +115,14 @@ describe("Mutating Admission Webhook", () => {
     expect(containerPatch.op).toBe("add");
     expect(containerPatch.value.name).toBe("gate-sidecar");
     expect(containerPatch.value.image).toBe("ghcr.io/test/sidecar:latest");
+
+    // Verify sidecar has volumeMount for projected SA token
+    const volumeMount = containerPatch.value.volumeMounts?.find(
+      (vm: { name: string }) => vm.name === "gate-sidecar-sa-token"
+    );
+    expect(volumeMount).toBeDefined();
+    expect(volumeMount.mountPath).toBe("/var/run/secrets/gate-sidecar/serviceaccount");
+    expect(volumeMount.readOnly).toBe(true);
 
     // Verify env vars
     const envMap = new Map(
@@ -129,6 +145,15 @@ describe("Mutating Admission Webhook", () => {
     );
     expect(podNsEnv.valueFrom.fieldRef.fieldPath).toBe("metadata.namespace");
 
+    // Projected volume patch
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes"
+    );
+    expect(volumePatch).toBeDefined();
+    expect(volumePatch.op).toBe("add");
+    expect(volumePatch.value[0].name).toBe("gate-sidecar-sa-token");
+    expect(volumePatch.value[0].projected.sources).toHaveLength(2);
+
     // Readiness gate patch
     const gatePatch = patches.find(
       (p: { path: string }) => p.path === "/spec/readinessGates"
@@ -139,7 +164,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should pass through pods without qovery-deploy-gate.life.li/group label", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       app: "my-app",
     });
@@ -162,7 +186,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should skip injection when required Qovery labels are missing", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       // No qovery.com/deployment-id or qovery.com/service-id
@@ -246,7 +269,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should fire-and-forget POST /expect to gate for gated pods", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-expect",
@@ -271,7 +293,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should not call /expect on dry-run", async () => {
-    fetchCalls.length = 0;
     const review = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-dry",
@@ -296,6 +317,116 @@ describe("Mutating Admission Webhook", () => {
 
     // But no /expect call
     expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("should append projected volume to existing volumes", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-c",
+        "qovery.com/deployment-id": "d3",
+        "qovery.com/service-id": "s3",
+      },
+      undefined,
+      { volumes: [{ name: "app-config", configMap: { name: "my-config" } }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+
+    // Volume should be appended (using /-) not replaced
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes/-"
+    );
+    expect(volumePatch).toBeDefined();
+    expect(volumePatch.op).toBe("add");
+    expect(volumePatch.value.name).toBe("gate-sidecar-sa-token");
+  });
+
+  it("should skip injection and /expect if sidecar already present", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-d",
+        "qovery.com/deployment-id": "d4",
+        "qovery.com/service-id": "s4",
+      },
+      undefined,
+      { containers: [{ name: "main", image: "nginx:latest" }, { name: "gate-sidecar", image: "old-sidecar:v1" }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    await new Promise((r) => setTimeout(r, 10));
+
+    const review = JSON.parse(res.payload);
+    expect(review.response.allowed).toBe(true);
+    // No patch should be sent
+    expect(review.response.patch).toBeUndefined();
+    expect(review.response.patchType).toBeUndefined();
+    // No /expect call
+    expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("should not duplicate volume if already present", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-f",
+        "qovery.com/deployment-id": "d6",
+        "qovery.com/service-id": "s6",
+      },
+      undefined,
+      { volumes: [{ name: "gate-sidecar-sa-token", projected: { sources: [] } }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+
+    // Should have container + readiness gate but NO volume patch
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes/-" || p.path === "/spec/volumes"
+    );
+    expect(volumePatch).toBeUndefined();
+  });
+
+  it("should not duplicate readiness gate if already present", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-e",
+        "qovery.com/deployment-id": "d5",
+        "qovery.com/service-id": "s5",
+      },
+      [{ conditionType: "qovery-deploy-gate.life.li/synced" }]
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+
+    // Should have container + volume patches but NO readiness gate patch
+    const gatePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/readinessGates/-" || p.path === "/spec/readinessGates"
+    );
+    expect(gatePatch).toBeUndefined();
   });
 
   it("healthz should return 200", async () => {

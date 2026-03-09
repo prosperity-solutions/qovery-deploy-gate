@@ -104,8 +104,9 @@ Add qovery-deploy-gate as a Helm service in your Qovery environment:
    - **Repository**: Add `ghcr.io/prosperity-solutions/qovery-deploy-gate` as a Helm repository in **Organization Settings > Helm Repositories** (type: OCI, public).
    - **Chart name**: `chart`
    - **Version**: Use the latest version from the [releases page](https://github.com/prosperity-solutions/qovery-deploy-gate/releases)
-4. No values override needed for defaults. Optionally customize via raw YAML or `--set` arguments (see [Configuration](#configuration)).
-5. Click **Create** and deploy.
+4. Enable **"Allow cluster-wide resources"** on the Helm service. The chart deploys ClusterRoles, ClusterRoleBindings, and a MutatingWebhookConfiguration that operate across namespaces — these require cluster-scoped permissions.
+5. No values override needed for defaults. Optionally customize via raw YAML or `--set` arguments (see [Configuration](#configuration)).
+6. Click **Create** and deploy.
 
 > **Alternative**: You can also install via the [Qovery Terraform provider](https://registry.terraform.io/providers/Qovery/qovery/latest/docs) or the [Qovery API](https://api-doc.qovery.com/).
 
@@ -211,11 +212,7 @@ This handles cancelled or failed deployments without a background timer. Expirat
 
 ### Service Account Token Mounting
 
-The gate-sidecar needs access to the Kubernetes API to patch pod readiness conditions. Some platforms (including Qovery) disable `automountServiceAccountToken` on pods by default. When the webhook detects this, it patches the field to `true` so the service account token gets mounted.
-
-This is a **pod-level** setting — all containers in the pod (including your application) will have access to the token. The token is scoped to the pod's service account, and the RBAC rules only grant `pods/get` and `pods/status/patch`, so the blast radius is minimal.
-
-If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
+The gate-sidecar needs access to the Kubernetes API to read its own pod status and patch the readiness gate condition. Rather than enabling `automountServiceAccountToken` pod-wide (which would expose the token to all containers), the webhook injects a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the service account token and CA certificate **only into the gate-sidecar container**. Your application containers are not affected, even on platforms like Qovery that disable token mounting by default.
 
 ## Why Sidecars Instead of a Central Pod Watcher?
 
