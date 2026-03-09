@@ -8,7 +8,7 @@ When tightly coupled services deploy simultaneously on Qovery, each service pass
 
 **qovery-deploy-gate** holds new pods from becoming ready until every service in a sync group is ready, then opens them all at once. Traffic switches to all new versions simultaneously. The version skew window shrinks from minutes to milliseconds.
 
-Since Qovery uses a blue-green rolling update strategy (`maxSurge=100%`, `maxUnavailable=0%`), old pods keep serving throughout. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back — zero downtime even during failures.
+When combined with a blue/green-style rollout strategy (`maxSurge=100%`, `maxUnavailable=0%`), old pods keep serving throughout. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back — zero downtime even during failures. See [Deployment strategies](#deployment-strategies) for how the gate behaves with different rollout configurations.
 
 ## How It Works
 
@@ -59,9 +59,42 @@ No changes to application images, Dockerfiles, env vars, or readiness probes. Co
 | Webhook | `ghcr.io/prosperity-solutions/qovery-deploy-gate/webhook` | Mutating admission webhook |
 | Sidecar | `ghcr.io/prosperity-solutions/qovery-deploy-gate/sidecar` | Readiness gate coordinator (~8MB) |
 
+## Where It Fits in Qovery's Pipeline
+
+> **Note:** Synchronized multi-service readiness is an unsolved problem across the Kubernetes ecosystem, not specific to Qovery. Argo Rollouts, Flagger, and service meshes handle progressive delivery for individual services but none coordinate readiness across multiple services. The common workarounds are backward-compatible APIs, feature flags, or accepting the skew window. Everyone builds something custom. This project provides a generic, infrastructure-level solution for Qovery environments.
+
+Qovery's deployment pipeline stages control **what is built and started together** — but not what becomes **ready** together. When you deploy an environment, Qovery orchestrates the rollout: building images, provisioning nodes, and starting pods. Each service independently passes its readiness probe and starts receiving traffic as soon as it's healthy.
+
+The deploy gate fills the gap between deployment *start* and deployment *finish*. Qovery ensures your services deploy together. The gate ensures they go live together.
+
+```
+Without the gate:
+  API pod ready    ──────► traffic switches to API v2
+  Worker pod ready ────────────► traffic switches to Worker v2
+                         ↑
+                   version skew window (API v2 talks to Worker v1)
+
+With the gate:
+  API pod ready    ──┐
+  Worker pod ready ──┤
+                     └──► gate opens ──► both switch simultaneously
+```
+
+### Deployment strategies
+
+We strongly recommend a **blue/green-style rolling update strategy** (`maxSurge=100%`, `maxUnavailable=0%`) for all gated services. This is not Qovery's default — you need to configure it via Qovery's [advanced settings](https://hub.qovery.com/docs/using-qovery/configuration/advanced-settings/).
+
+**Blue/green** (`maxSurge=100%`, `maxUnavailable=0%`) gives you the strongest guarantees. Kubernetes creates all new pods upfront while old pods keep serving. The gate holds every new pod until all group members are ready, then opens them all at once — an atomic traffic cutover with zero downtime and zero version skew. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back.
+
+**Progressive rolling** (`maxSurge=25%`, `maxUnavailable=25%` — Qovery's default) works but provides weaker guarantees. Kubernetes creates the first batch of new pods (25%). The gate holds them until all expected services have at least one ready pod, then opens the batch. Once the group completes, subsequent waves of pods open immediately (via the completed group shortcut). This means the first batch of v2 pods across all services goes live simultaneously, but the remaining pods roll out progressively — resulting in a period where both v1 and v2 pods serve traffic side by side within each service. The gate prevents the worst case (service A fully on v2 while service B is still on v1) but doesn't give you the clean atomic cutover that blue/green provides.
+
+**Recreate** kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
+
 ## Quick Start
 
 ### 1. Deploy the Helm chart on your Qovery cluster
+
+The gate operates at the Kubernetes cluster level — install it **once per cluster** where you need synchronized deployments. If you run multiple Qovery clusters (e.g., staging and production), install it on each cluster independently.
 
 Add qovery-deploy-gate as a Helm service in your Qovery environment:
 
@@ -183,6 +216,55 @@ The gate-sidecar needs access to the Kubernetes API to patch pod readiness condi
 This is a **pod-level** setting — all containers in the pod (including your application) will have access to the token. The token is scoped to the pod's service account, and the RBAC rules only grant `pods/get` and `pods/status/patch`, so the blast radius is minimal.
 
 If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
+
+## Why Sidecars Instead of a Central Pod Watcher?
+
+A natural question is: if the gate runs inside the cluster, why not have it watch pods directly via the Kubernetes API and skip the sidecar entirely?
+
+The sidecar approach is a deliberate design choice. It inverts responsibility: instead of the gate needing to discover, track, and never miss a pod, **each pod is responsible for proving itself to the gate**. The gate just sits there and evaluates what it's been told.
+
+### Failure defaults to safety
+
+If the sidecar can't reach the gate, the readiness gate stays unpatched and the pod stays not-ready. Traffic never flows to a pod that hasn't been coordinated. A central watcher would need to explicitly handle every failure mode (missed watch events, gate restarts, API server outages) to avoid accidentally letting a pod through.
+
+### The gate stays stateless
+
+The gate is a simple HTTP server backed by Postgres. No Kubernetes watch connections, no `resourceVersion` tracking, no informer caches, no leader election. A gate replica can restart and the next sidecar poll (within 5 seconds) picks up right where it left off. Making the gate watch pods would turn it into a stateful Kubernetes controller — a fundamentally harder system to build, operate, and debug.
+
+### Distributed fault isolation
+
+Each sidecar manages exactly one pod's lifecycle. A bug or network issue affecting one sidecar cannot impact another pod. A central watcher concentrates all responsibility into a single component where one bug can stall an entire deployment.
+
+### Autoscaling and horizontal scaling are trivial
+
+Sidecars don't need to distinguish between "new deployment pod" and "autoscaling pod." They register, the gate checks if the group already completed, and responds accordingly. A central watcher would need to discover new pods, correlate them with deployments, and decide whether they're part of a rollout or autoscaling — all in real time without missing events.
+
+### Belt-and-suspenders registration
+
+The webhook's `/expect` call is fire-and-forget. If it fails, the sidecar's `/register` call serves as a fallback, ensuring the gate always learns about every service. A central watcher would lose this fallback path — if `/expect` fails and no sidecar registers, the gate would never learn about the service and could open the group prematurely, causing the exact version skew the system exists to prevent.
+
+### Minimal RBAC footprint
+
+The gate's service account has zero Kubernetes API permissions. Each sidecar uses the pod's own service account to read and patch only its own pod. A central watcher would need cluster-wide `pods/list`, `pods/watch`, and `pods/status/patch` — making the gate a high-value target if compromised.
+
+### Self-throttling load
+
+Sidecars poll at a fixed 5-second interval, creating predictable, bounded load proportional to the number of actively deploying pods. Outside of deployments, the load is zero. A watch-based approach receives events for every pod status change, with unpredictable bursts during node scaling or large rollouts.
+
+In short: the sidecar is not a workaround for the gate being outside the cluster. It's a design feature that keeps the gate simple, makes failures safe, and distributes responsibility where it belongs.
+
+## Why the Webhook and Gate Are Separate Services
+
+The webhook and gate could be a single service — they both run in-cluster, and the webhook already calls the gate's `/expect` endpoint. Merging them would mean one fewer deployment, service, and TLS certificate to manage.
+
+They are separate for **failure isolation**. Kubernetes admission webhooks are synchronous — the API server blocks pod creation until the webhook responds. If the webhook and gate shared a process, a Postgres outage or gate bug could cause the webhook to hang or crash, blocking **all pod creation** cluster-wide (with `failurePolicy: Fail`).
+
+By keeping them separate:
+- **Webhook down** → pod creation is blocked, but only because the admission webhook is unreachable. Qovery's deployment stalls cleanly.
+- **Gate down** → pods are created and sidecars are injected normally. Sidecars just can't reach the gate yet and retry every 5 seconds. Old pods keep serving.
+- **Postgres down** → only the gate is affected. The webhook continues injecting sidecars without issue because it doesn't need the database — it fire-and-forgets `/expect` and moves on.
+
+This separation ensures that a coordination-layer problem (the gate) never escalates into a platform-level problem (pod creation failing).
 
 ## Edge Cases
 
