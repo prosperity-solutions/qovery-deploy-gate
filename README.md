@@ -8,7 +8,7 @@ When tightly coupled services deploy simultaneously on Qovery, each service pass
 
 **qovery-deploy-gate** holds new pods from becoming ready until every service in a sync group is ready, then opens them all at once. Traffic switches to all new versions simultaneously. The version skew window shrinks from minutes to milliseconds.
 
-Since Qovery uses a blue-green rolling update strategy (`maxSurge=100%`, `maxUnavailable=0%`), old pods keep serving throughout. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back — zero downtime even during failures.
+When combined with a blue/green-style rollout strategy (`maxSurge=100%`, `maxUnavailable=0%`), old pods keep serving throughout. If the gate never opens, old pods serve indefinitely and Qovery eventually rolls back — zero downtime even during failures. See [Deployment strategies](#deployment-strategies) for how the gate behaves with different rollout configurations.
 
 ## How It Works
 
@@ -82,11 +82,13 @@ With the gate:
 
 ### Deployment strategies
 
-The gate is most effective with **blue/green-style rolling deployments** — Qovery's default strategy (`maxSurge=100%`, `maxUnavailable=0%`). In this mode, old pods serve traffic while new pods are held by the gate. When all new pods are ready, traffic switches simultaneously. If the gate never opens, old pods serve indefinitely and Qovery rolls back. This gives you zero downtime and zero version skew.
+The gate works with any Kubernetes rollout strategy, but the value it provides differs depending on the configuration.
 
-**Progressive rolling deployments** (e.g., `maxSurge=25%`, `maxUnavailable=25%`) replace pods incrementally. The gate still prevents version skew — no new pod receives traffic until every group member is ready — but since it holds *all* new pods until the group completes, it effectively turns a progressive rollout into a blue/green one. This works correctly but requires enough cluster capacity to run both the old and new full replica sets simultaneously.
+**Blue/green-style rolling** (`maxSurge=100%`, `maxUnavailable=0%`) is the ideal setup. Kubernetes creates a full set of new pods while old pods keep serving. The gate holds new pods from becoming ready, so traffic stays on old pods until every group member is up. Then all switch simultaneously — zero downtime, zero version skew. If the gate never opens, old pods serve indefinitely and Qovery rolls back. We recommend configuring this via Qovery's [advanced settings](https://hub.qovery.com/docs/using-qovery/configuration/advanced-settings/) for services that use the gate.
 
-**Recreate strategy** (`maxUnavailable=100%`) kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If your services can tolerate downtime during deploys, the gate adds coordination overhead without much benefit. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
+**Progressive rolling** (`maxSurge=25%`, `maxUnavailable=25%` — Qovery's default) replaces pods incrementally. The gate still prevents version skew — no new pod receives traffic until every group member is ready — but since it holds *all* new pods until the group completes, it effectively turns the progressive rollout into a blue/green one. This works correctly but requires enough cluster capacity to run both the old and new full replica sets simultaneously. If you use the gate, consider switching to explicit blue/green settings to match the actual behavior.
+
+**Recreate** kills all old pods before starting new ones, so there is inherent downtime during every deployment. The gate can still coordinate readiness across services — ensuring that traffic resumes only when *all* services are up — but the primary value proposition (zero-downtime cutover) does not apply. If your services can tolerate downtime during deploys, the gate adds coordination overhead without much benefit. If you need all services to come back online together after a recreate (e.g., to avoid partial availability), the gate can help with that.
 
 ## Quick Start
 
