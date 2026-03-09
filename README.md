@@ -59,9 +59,30 @@ No changes to application images, Dockerfiles, env vars, or readiness probes. Co
 | Webhook | `ghcr.io/prosperity-solutions/qovery-deploy-gate/webhook` | Mutating admission webhook |
 | Sidecar | `ghcr.io/prosperity-solutions/qovery-deploy-gate/sidecar` | Readiness gate coordinator (~8MB) |
 
+## Where It Fits in Qovery's Pipeline
+
+Qovery's deployment pipeline stages control **what is built and started together** — but not what becomes **ready** together. When you deploy an environment, Qovery orchestrates the rollout: building images, provisioning nodes, and starting pods. Each service independently passes its readiness probe and starts receiving traffic as soon as it's healthy.
+
+The deploy gate fills the gap between deployment *start* and deployment *finish*. Qovery ensures your services deploy together. The gate ensures they go live together.
+
+```
+Without the gate:
+  API pod ready    ──────► traffic switches to API v2
+  Worker pod ready ────────────► traffic switches to Worker v2
+                         ↑
+                   version skew window (API v2 talks to Worker v1)
+
+With the gate:
+  API pod ready    ──┐
+  Worker pod ready ──┤
+                     └──► gate opens ──► both switch simultaneously
+```
+
 ## Quick Start
 
 ### 1. Deploy the Helm chart on your Qovery cluster
+
+The gate operates at the Kubernetes cluster level — install it **once per cluster** where you need synchronized deployments. If you run multiple Qovery clusters (e.g., staging and production), install it on each cluster independently.
 
 Add qovery-deploy-gate as a Helm service in your Qovery environment:
 
