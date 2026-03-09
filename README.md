@@ -184,6 +184,42 @@ This is a **pod-level** setting — all containers in the pod (including your ap
 
 If this is a concern for your security posture, a future improvement could inject a [projected volume](https://kubernetes.io/docs/concepts/storage/projected-volumes/) that mounts the token only into the `gate-sidecar` container instead of enabling it pod-wide.
 
+## Why Sidecars Instead of a Central Pod Watcher?
+
+A natural question is: if the gate runs inside the cluster, why not have it watch pods directly via the Kubernetes API and skip the sidecar entirely?
+
+The sidecar approach is a deliberate design choice. It inverts responsibility: instead of the gate needing to discover, track, and never miss a pod, **each pod is responsible for proving itself to the gate**. The gate just sits there and evaluates what it's been told.
+
+### Failure defaults to safety
+
+If the sidecar can't reach the gate, the readiness gate stays unpatched and the pod stays not-ready. Traffic never flows to a pod that hasn't been coordinated. A central watcher would need to explicitly handle every failure mode (missed watch events, gate restarts, API server outages) to avoid accidentally letting a pod through.
+
+### The gate stays stateless
+
+The gate is a simple HTTP server backed by Postgres. No Kubernetes watch connections, no `resourceVersion` tracking, no informer caches, no leader election. A gate replica can restart and the next sidecar poll (within 5 seconds) picks up right where it left off. Making the gate watch pods would turn it into a stateful Kubernetes controller — a fundamentally harder system to build, operate, and debug.
+
+### Distributed fault isolation
+
+Each sidecar manages exactly one pod's lifecycle. A bug or network issue affecting one sidecar cannot impact another pod. A central watcher concentrates all responsibility into a single component where one bug can stall an entire deployment.
+
+### Autoscaling and horizontal scaling are trivial
+
+Sidecars don't need to distinguish between "new deployment pod" and "autoscaling pod." They register, the gate checks if the group already completed, and responds accordingly. A central watcher would need to discover new pods, correlate them with deployments, and decide whether they're part of a rollout or autoscaling — all in real time without missing events.
+
+### Belt-and-suspenders registration
+
+The webhook's `/expect` call is fire-and-forget. If it fails, the sidecar's `/register` call serves as a fallback, ensuring the gate always learns about every service. A central watcher would lose this fallback path — if `/expect` fails and no sidecar registers, the gate would never learn about the service and could open the group prematurely, causing the exact version skew the system exists to prevent.
+
+### Minimal RBAC footprint
+
+The gate's service account has zero Kubernetes API permissions. Each sidecar uses the pod's own service account to read and patch only its own pod. A central watcher would need cluster-wide `pods/list`, `pods/watch`, and `pods/status/patch` — making the gate a high-value target if compromised.
+
+### Self-throttling load
+
+Sidecars poll at a fixed 5-second interval, creating predictable, bounded load proportional to the number of actively deploying pods. Outside of deployments, the load is zero. A watch-based approach receives events for every pod status change, with unpredictable bursts during node scaling or large rollouts.
+
+In short: the sidecar is not a workaround for the gate being outside the cluster. It's a design feature that keeps the gate simple, makes failures safe, and distributes responsibility where it belongs.
+
 ## Edge Cases
 
 ### Redeployment with unchanged images
