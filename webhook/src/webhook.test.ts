@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from "vitest";
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from "vitest";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerWebhook } from "./webhook.js";
 
@@ -71,13 +71,16 @@ describe("Mutating Admission Webhook", () => {
     await app.ready();
   });
 
+  beforeEach(() => {
+    fetchCalls.length = 0;
+  });
+
   afterAll(async () => {
     await app.close();
     globalThis.fetch = originalFetch;
   });
 
   it("should inject sidecar for pods with qovery-deploy-gate.life.li/group label", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-123",
@@ -161,7 +164,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should pass through pods without qovery-deploy-gate.life.li/group label", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       app: "my-app",
     });
@@ -184,7 +186,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should skip injection when required Qovery labels are missing", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       // No qovery.com/deployment-id or qovery.com/service-id
@@ -268,7 +269,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should fire-and-forget POST /expect to gate for gated pods", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-expect",
@@ -293,7 +293,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should not call /expect on dry-run", async () => {
-    fetchCalls.length = 0;
     const review = makeAdmissionReview({
       "qovery-deploy-gate.life.li/group": "my-group",
       "qovery.com/deployment-id": "dep-dry",
@@ -350,7 +349,6 @@ describe("Mutating Admission Webhook", () => {
   });
 
   it("should skip injection and /expect if sidecar already present", async () => {
-    fetchCalls.length = 0;
     const body = makeAdmissionReview(
       {
         "qovery-deploy-gate.life.li/group": "group-d",
@@ -376,6 +374,33 @@ describe("Mutating Admission Webhook", () => {
     expect(review.response.patchType).toBeUndefined();
     // No /expect call
     expect(fetchCalls).toHaveLength(0);
+  });
+
+  it("should not duplicate volume if already present", async () => {
+    const body = makeAdmissionReview(
+      {
+        "qovery-deploy-gate.life.li/group": "group-f",
+        "qovery.com/deployment-id": "d6",
+        "qovery.com/service-id": "s6",
+      },
+      undefined,
+      { volumes: [{ name: "gate-sidecar-sa-token", projected: { sources: [] } }] }
+    );
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/mutate",
+      payload: body,
+    });
+
+    const review = JSON.parse(res.payload);
+    const patches = JSON.parse(Buffer.from(review.response.patch, "base64").toString());
+
+    // Should have container + readiness gate but NO volume patch
+    const volumePatch = patches.find(
+      (p: { path: string }) => p.path === "/spec/volumes/-" || p.path === "/spec/volumes"
+    );
+    expect(volumePatch).toBeUndefined();
   });
 
   it("should not duplicate readiness gate if already present", async () => {
