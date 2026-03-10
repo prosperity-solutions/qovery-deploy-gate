@@ -137,3 +137,18 @@ jobs:
           push: false
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # Single aggregator check for branch protection — add this as the only
+  # required status check so you never need to update branch rules when
+  # adding new CI jobs. Just add new jobs to the `needs` list below.
+  all-checks:
+    if: always()
+    needs: [gate, webhook, helm-lint, commitlint, release-dry-run, docker-build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify all checks passed
+        run: |
+          if [[ "${{ contains(needs.*.result, 'failure') }}" == "true" ]]; then
+            echo "One or more checks failed"
+            exit 1
+          fi
