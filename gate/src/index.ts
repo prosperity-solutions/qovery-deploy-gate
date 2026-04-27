@@ -9,7 +9,7 @@ const adapter = new PrismaPg({ connectionString: env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
 const app = Fastify({ logger: true });
 
-registerRoutes(app, prisma, env.MIN_SETTLE_TIME, env.STALE_TIMEOUT);
+registerRoutes(app, prisma, env.MIN_SETTLE_TIME, env.STALE_TIMEOUT, env.POD_STALE_TIMEOUT);
 registerUI(app);
 
 async function shutdown(signal: string) {

@@ -7,6 +7,7 @@ gate:
   replicas: 2
   minSettleTime: 30
   staleTimeout: 300      # seconds since last /ready ping before active deployments expire (default 5m)
+  podStaleTimeout: 90    # seconds since a pod's last heartbeat before a never-ready pod is treated as terminated (default 90s)
   port: 8080
   resources:
     requests:

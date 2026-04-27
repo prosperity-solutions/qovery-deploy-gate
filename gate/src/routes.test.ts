@@ -17,7 +17,7 @@ describeWithDb("API Routes (integration)", () => {
     const adapter = new PrismaPg({ connectionString: DATABASE_URL! });
     prisma = new PrismaClient({ adapter });
     app = Fastify();
-    registerRoutes(app, prisma, 0, 300); // 0s settle time, 300s stale timeout
+    registerRoutes(app, prisma, 0, 300, 90); // 0s settle time, 300s deployment stale, 90s pod stale
     await app.ready();
   });
 
@@ -733,6 +733,133 @@ describeWithDb("API Routes (integration)", () => {
     expect(dep.groups.web.services).toHaveLength(2);
   });
 
+  // --- stale pod exclusion tests ---
+
+  it("POST /ready excludes never-ready pod whose heartbeat has lapsed", async () => {
+    // Two pods of svc-a register
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-stale-pod", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-stale-pod", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+
+    // svc-a-pod-2 was terminated by HPA before becoming ready — age its heartbeat
+    await prisma.deploymentService.updateMany({
+      where: { deploymentId: "dep-stale-pod", podName: "svc-a-pod-2" },
+      data: { lastPingedAt: new Date(Date.now() - 120_000) },
+    });
+
+    // svc-a-pod-1 reports ready — gate should open because pod-2 is treated as gone
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-stale-pod", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gate_status).toBe("open");
+    expect(body.group_services_total).toBe(1);
+    expect(body.group_services_ready).toBe(1);
+  });
+
+  it("POST /ready still waits for never-ready pod whose heartbeat is fresh", async () => {
+    // Two pods of svc-a register — pod-2 never becomes ready but keeps heartbeating
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-fresh-pod", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-fresh-pod", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-fresh-pod", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    expect(res.statusCode).toBe(200);
+    const body = res.json();
+    expect(body.gate_status).toBe("waiting");
+    expect(body.pending_pods).toContain("svc-a/svc-a-pod-2");
+  });
+
+  it("POST /ready reports service as missing when its only pod became stale", async () => {
+    // Two services expected; svc-b's only pod registered but then got terminated
+    // before ever becoming ready.
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-sole-stale", service_id: "svc-a", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/expect",
+      payload: { deployment_id: "dep-sole-stale", service_id: "svc-b", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-sole-stale", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-sole-stale", service_id: "svc-b", pod_name: "svc-b-pod-1", group: "web" },
+    });
+
+    // svc-b's only pod stops heartbeating
+    await prisma.deploymentService.updateMany({
+      where: { deploymentId: "dep-sole-stale", podName: "svc-b-pod-1" },
+      data: { lastPingedAt: new Date(Date.now() - 120_000) },
+    });
+
+    const res = await app.inject({
+      method: "POST",
+      url: "/ready",
+      payload: { deployment_id: "dep-sole-stale", service_id: "svc-a", pod_name: "svc-a-pod-1" },
+    });
+
+    const body = res.json();
+    expect(body.gate_status).toBe("waiting");
+    expect(body.missing_services).toContain("svc-b");
+  });
+
+  it("GET /status hides never-ready pods whose heartbeat has lapsed", async () => {
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-stale-status", service_id: "svc-a", pod_name: "svc-a-pod-1", group: "web" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/register",
+      payload: { deployment_id: "dep-stale-status", service_id: "svc-a", pod_name: "svc-a-pod-2", group: "web" },
+    });
+
+    await prisma.deploymentService.updateMany({
+      where: { deploymentId: "dep-stale-status", podName: "svc-a-pod-2" },
+      data: { lastPingedAt: new Date(Date.now() - 120_000) },
+    });
+
+    const res = await app.inject({ method: "GET", url: "/status" });
+    const body = res.json();
+
+    const dep = body.active.find((d: { deployment_id: string }) => d.deployment_id === "dep-stale-status");
+    expect(dep).toBeDefined();
+    expect(dep.groups.web.services).toHaveLength(1);
+    expect(dep.groups.web.services[0].pod_name).toBe("svc-a-pod-1");
+  });
+
   // --- /status tests ---
 
   it("GET /status returns deployment data with pod info", async () => {
@@ -890,7 +1017,7 @@ describeWithDb("API Routes (integration)", () => {
   it("POST /ready returns waiting when settle time has not elapsed", async () => {
     // Create a separate app with 9999s settle time
     const settleApp = Fastify();
-    registerRoutes(settleApp, prisma, 9999, 300);
+    registerRoutes(settleApp, prisma, 9999, 300, 90);
     await settleApp.ready();
 
     await settleApp.inject({
@@ -916,7 +1043,7 @@ describeWithDb("API Routes (integration)", () => {
 
   it("POST /ready returns waiting when expected services present and ready but settle time not elapsed", async () => {
     const settleApp = Fastify();
-    registerRoutes(settleApp, prisma, 9999, 300);
+    registerRoutes(settleApp, prisma, 9999, 300, 90);
     await settleApp.ready();
 
     // Webhook pre-registers expected services
@@ -965,7 +1092,7 @@ describeWithDb("API Routes (integration)", () => {
 
   it("POST /ready settle time is per-group — late registration in another group does not reset", async () => {
     const settleApp = Fastify();
-    registerRoutes(settleApp, prisma, 2, 300); // 2s settle time
+    registerRoutes(settleApp, prisma, 2, 300, 90); // 2s settle time
     await settleApp.ready();
 
     // Group A registers first
@@ -1014,7 +1141,7 @@ describeWithDb("API Routes (integration)", () => {
 describe("API Routes (unit - no DB)", () => {
   it("GET /healthz returns 200 without database", async () => {
     const app = Fastify();
-    registerRoutes(app, {} as PrismaClient, 30, 300);
+    registerRoutes(app, {} as PrismaClient, 30, 300, 90);
     await app.ready();
 
     const res = await app.inject({ method: "GET", url: "/healthz" });
