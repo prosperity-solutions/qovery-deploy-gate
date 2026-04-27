@@ -32,6 +32,7 @@ model DeploymentService {
   groupName    String    @map("group_name")
   registeredAt DateTime  @default(now()) @map("registered_at")
   readyAt      DateTime? @map("ready_at")
+  lastPingedAt DateTime  @default(now()) @map("last_pinged_at")
 
   deployment Deployment @relation(fields: [deploymentId], references: [deploymentId], onDelete: Cascade)
 

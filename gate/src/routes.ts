@@ -26,11 +26,19 @@ function isStale(lastPingedAt: Date, staleTimeout: number): boolean {
   return Date.now() - lastPingedAt.getTime() > staleTimeout * 1000;
 }
 
+// A never-ready pod whose heartbeat has lapsed is treated as terminated
+// (HPA scale-down, eviction). Without this, the gate would wait forever on it.
+function isPodStale(pod: { readyAt: Date | null; lastPingedAt: Date }, podStaleTimeout: number): boolean {
+  if (pod.readyAt !== null) return false;
+  return isStale(pod.lastPingedAt, podStaleTimeout);
+}
+
 export function registerRoutes(
   app: FastifyInstance,
   prisma: PrismaClient,
   minSettleTime: number,
-  staleTimeout: number = 300
+  staleTimeout: number = 300,
+  podStaleTimeout: number = 90
 ) {
   // Liveness probe - no DB access
   app.get("/healthz", async (_request, reply) => {
@@ -179,8 +187,9 @@ export function registerRoutes(
           podName: pod_name,
           namespace: ns,
           groupName: group,
+          lastPingedAt: now,
         },
-        update: { groupName: group },
+        update: { groupName: group, lastPingedAt: now },
       });
 
       if (!existingBefore) {
@@ -313,14 +322,13 @@ export function registerRoutes(
         },
       });
 
+      const nowTs = new Date();
+      await tx.deploymentService.update({
+        where: { id: service.id },
+        data: { readyAt: service.readyAt ?? nowTs, lastPingedAt: nowTs },
+      });
+
       if (completedGroup) {
-        // Mark pod ready so it doesn't linger as pending
-        if (!service.readyAt) {
-          await tx.deploymentService.update({
-            where: { id: service.id },
-            data: { readyAt: new Date() },
-          });
-        }
         return {
           gate_status: "open" as const,
           group: service.groupName,
@@ -328,21 +336,18 @@ export function registerRoutes(
         };
       }
 
-      // Mark the pod as ready if not already
-      if (!service.readyAt) {
-        await tx.deploymentService.update({
-          where: { id: service.id },
-          data: { readyAt: new Date() },
-        });
-      }
-
-      // Check if all pods in the same group are ready
-      const groupServices = await tx.deploymentService.findMany({
+      // Fetch peers and exclude never-ready pods whose heartbeat has lapsed
+      // (terminated before ever becoming ready — see isPodStale).
+      const allGroupServices = await tx.deploymentService.findMany({
         where: {
           deploymentId: deployment_id,
           groupName: service.groupName,
         },
       });
+
+      const groupServices = allGroupServices.filter(
+        (s) => s.id === service.id || !isPodStale(s, podStaleTimeout)
+      );
 
       const pendingPods = groupServices.filter((s) => {
         if (s.id === service.id) return false;
@@ -466,6 +471,9 @@ export function registerRoutes(
         // Skip pods that registered after the group completed (autoscaling pods)
         const completedAt = groupCompletionTimes[svc.groupName];
         if (completedAt && svc.registeredAt > completedAt) {
+          continue;
+        }
+        if (isPodStale(svc, podStaleTimeout)) {
           continue;
         }
 

@@ -45,6 +45,8 @@ spec:
               value: {{ .Values.gate.port | quote }}
             - name: STALE_TIMEOUT
               value: {{ .Values.gate.staleTimeout | quote }}
+            - name: POD_STALE_TIMEOUT
+              value: {{ .Values.gate.podStaleTimeout | quote }}
           livenessProbe:
             httpGet:
               path: /healthz

@@ -175,6 +175,7 @@ gate:
   replicas: 2
   minSettleTime: 30        # seconds to wait after last pod registration
   staleTimeout: 300        # seconds since last /ready ping before expiring (default 5m)
+  podStaleTimeout: 90      # seconds since a pod's last heartbeat before a never-ready pod is treated as terminated (default 90s)
   database:
     external: false        # use built-in Postgres
     url: ""                # connection string if external
@@ -209,6 +210,12 @@ Every failure is **fail-closed** — Qovery's existing rollback mechanisms handl
 Deployments track a `lastPingedAt` timestamp, updated on every `/ready` call from a sidecar. If no sidecar has polled for longer than `staleTimeout` (default 5 minutes), the deployment is lazily marked as EXPIRED and the gate opens — letting any remaining sidecars proceed.
 
 This handles cancelled or failed deployments without a background timer. Expiration is checked on `/ready` calls and `/status` queries (the UI polls every 5 seconds), so stale deployments are cleaned up promptly.
+
+### Pod-Level Heartbeat
+
+Each registered pod also tracks a `lastPingedAt` timestamp, refreshed on every `/register` and `/ready` call. While the app containers are still starting, the sidecar heartbeats by re-calling `/register` (idempotent) on every poll iteration; once the app is ready, `/ready` calls keep the heartbeat fresh.
+
+If a pod registers but is then terminated before ever becoming ready — e.g. HPA scale-down mid-rollout, eviction, or node failure — its sidecar stops heartbeating. After `podStaleTimeout` (default 90s), the gate evaluator treats the pod as gone and excludes it from the group's pending-pod set. Without this, a single ghost pod would block the gate forever. Pods that have already reported ready are not affected by stale exclusion.
 
 ### Service Account Token Mounting
 

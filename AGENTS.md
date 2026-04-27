@@ -21,6 +21,7 @@ Packaging: Helm chart in `chart/` with PostgreSQL subchart dependency.
 - **Fire-and-forget `/expect`**: The webhook doesn't wait for the gate's response. The sidecar's `/register` serves as a belt-and-suspenders fallback if `/expect` fails.
 - **Per-group settle time**: Computed from `max(registeredAt)` of each group's pods, not deployment-global. Prevents group-B registration from resetting group-A's timer.
 - **CompletedGroup table**: Records when a group first opens. Autoscaling pods that appear after completion get instant "open" and are filtered from the status/UI.
+- **Per-pod heartbeat**: Each `DeploymentService` row carries `lastPingedAt`, refreshed by `/register` and `/ready`. Never-ready pods whose heartbeat lapses past `POD_STALE_TIMEOUT` (default 90s) are excluded from gate evaluation, so HPA scale-down or eviction of a pre-ready pod cannot stall the gate forever. The sidecar re-calls `/register` on each loop iteration while waiting for app-ready to keep its heartbeat fresh.
 - **CASCADE deletes**: All FK constraints use ON DELETE CASCADE for easy deployment cleanup.
 - **Requires blue/green rollout strategy**: `maxSurge=100%`, `maxUnavailable=0%`. Progressive rolling (Qovery's default 25/25) works but provides weaker guarantees.
 
@@ -41,12 +42,12 @@ gate/
   src/
     index.ts          # Fastify server setup, config loading
     routes.ts         # All API endpoints (/expect, /register, /ready, /status, /healthz, /readyz)
-    routes.test.ts    # Integration tests (36 tests, requires PostgreSQL)
+    routes.test.ts    # Integration tests (40 tests, requires PostgreSQL)
     ui.ts             # HTML dashboard (GET /ui)
     config.ts         # Environment variable parsing
   prisma/
     schema.prisma     # Data models: Deployment, DeploymentService, ExpectedService, CompletedGroup
-    migrations/       # SQL migrations (0001–0011)
+    migrations/       # SQL migrations (0001–0012)
 
 webhook/
   src/

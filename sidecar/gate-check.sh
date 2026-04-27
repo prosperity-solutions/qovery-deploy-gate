@@ -158,6 +158,10 @@ while true; do
   # Step 1: Check if app containers are ready
   if ! check_containers_ready; then
     log "App not ready yet, waiting..."
+    # Heartbeat the gate so a never-ready pod that gets terminated (HPA scale-down,
+    # eviction) doesn't get stuck blocking the gate — the gate excludes pods whose
+    # heartbeat has lapsed. /register is idempotent and refreshes lastPingedAt.
+    register_with_gate || true
     sleep "$GATE_POLL_INTERVAL" &
     wait $!
     continue
